@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 及更高版本的云备份和设备迁移规则。 -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="xxt_accounts.xml" />
+        <exclude domain="sharedpref" path="xxt_session.xml" />
+        <exclude domain="root" path="app_webview" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="xxt_accounts.xml" />
+        <exclude domain="sharedpref" path="xxt_session.xml" />
+        <exclude domain="root" path="app_webview" />
+    </device-transfer>
+</data-extraction-rules>

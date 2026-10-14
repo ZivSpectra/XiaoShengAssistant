@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AndroidManifest.xml = App 的"房产证"：声明权限、入口页面、应用信息 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 网络权限：登录学习通、请求作业接口都靠它 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 通知权限（安卓 13+ 需要用户同意才能发提醒通知） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.XueXiTongAssistant">
+
+        <!-- 登录页：App 的入口（桌面图标点了先进这里；已有账号则先进主页） -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 主页：账号切换 + 作业列表（按截止时间排序） -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:launchMode="singleTop" />
+
+        <!-- 作业详情：点击作业后，用带登录会话的 WebView 打开学习通对应作业页 -->
+        <activity
+            android:name=".HomeworkDetailActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".VerificationActivity"
+            android:exported="false" />
+
+        <receiver
+            android:name=".remind.ExactReminderReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".remind.ReminderBootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.DATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

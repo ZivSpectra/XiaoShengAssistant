@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Intentional project-level exceptions: legacy launcher PNGs and the
+     activity/WebView wrapper are retained for compatibility and branding. -->
+<lint>
+    <issue id="IconLauncherShape" severity="ignore" />
+    <issue id="VectorPath" severity="ignore" />
+    <issue id="MergeRootFrame" severity="ignore" />
+    <issue id="ObsoleteSdkInt" severity="ignore" />
+</lint>

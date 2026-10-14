@@ -1,0 +1,28 @@
+# Gradle and Android Studio build state
+.gradle/
+**/build/
+.idea/
+*.iml
+
+# Machine-specific Android SDK and Gradle settings
+local.properties
+
+# Local account/session state and debug captures
+xxt_accounts.xml
+edge-session/
+audit/*
+!audit/*.md
+
+# Root-level emulator screenshots and UI dumps
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.xml
+
+# Generated APKs are attached to GitHub Releases, not committed to source history
+deliverables/
+
+# Local editor/OS files
+.DS_Store
+Thumbs.db

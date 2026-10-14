@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 及更低版本的 Auto Backup 规则：不备份登录凭证。 -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="xxt_accounts.xml" />
+    <exclude domain="sharedpref" path="xxt_session.xml" />
+    <!-- WebView 可能保存学习通 Cookie，整个目录不参与备份。 -->
+    <exclude domain="root" path="app_webview" />
+</full-backup-content>
