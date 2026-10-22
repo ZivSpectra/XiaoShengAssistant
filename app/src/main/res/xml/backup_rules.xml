@@ -1,8 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 11 及更低版本的 Auto Backup 规则：不备份登录凭证。 -->
+<!-- Android 11 及更低版本的 Auto Backup 规则：不备份凭证或学习记录。 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="xxt_accounts.xml" />
     <exclude domain="sharedpref" path="xxt_session.xml" />
+    <exclude domain="sharedpref" path="xxt_cache.xml" />
+    <exclude domain="sharedpref" path="xxt_manual.xml" />
+    <exclude domain="sharedpref" path="xxt_deadline_overrides.xml" />
+    <exclude domain="sharedpref" path="xxt_hidden.xml" />
+    <exclude domain="sharedpref" path="xxt_local_completion.xml" />
+    <exclude domain="sharedpref" path="xxt_manual_deadline_prompts.xml" />
+    <exclude domain="sharedpref" path="xxt_unknown_deadline.xml" />
+    <exclude domain="sharedpref" path="xxt_remind.xml" />
+    <exclude domain="sharedpref" path="xxt_course_schedule.xml" />
+    <exclude domain="sharedpref" path="xxt_course_periods.xml" />
+    <exclude domain="sharedpref" path="xxt_course_table_settings.xml" />
+    <exclude domain="sharedpref" path="xxt_course_reminder.xml" />
+    <exclude domain="sharedpref" path="xxt_course_notifications.xml" />
+    <exclude domain="sharedpref" path="xxt_courses.xml" />
+    <exclude domain="sharedpref" path="xxt_pinned.xml" />
+    <exclude domain="sharedpref" path="xxt_pet_settings.xml" />
+    <exclude domain="sharedpref" path="xxt_work_cfg.xml" />
+    <exclude domain="sharedpref" path="xxt_view.xml" />
+    <exclude domain="sharedpref" path="xxt_reminder_onboarding.xml" />
     <!-- WebView 可能保存学习通 Cookie，整个目录不参与备份。 -->
     <exclude domain="root" path="app_webview" />
+    <!-- WorkManager 数据可能包含作业 URL 与账号标识。 -->
+    <exclude domain="database" path="androidx.work.workdb" />
+    <exclude domain="file" path="debug_log.txt" />
+    <exclude domain="file" path="debug_log.previous.txt" />
 </full-backup-content>

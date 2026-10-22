@@ -81,6 +81,39 @@ public class DeadlineParserTest {
     }
 
     @Test
+    public void publicationDateIsNotMistakenForDeadline() {
+        long now = 1800000000000L;
+        assertEquals(0L, DeadlineParser.INSTANCE.parseTaskEndTime(
+                "发布于 2026-09-01 10:00", "作业要求：按时完成", now));
+    }
+
+    @Test
+    public void explicitlyLabeledDeadlineDateIsAccepted() throws Exception {
+        long now = date("2026-10-06 12:00");
+        long expected = date("2026-10-14 23:59");
+        assertEquals(expected, DeadlineParser.INSTANCE.parseTaskEndTime(
+                "截止时间：2026-10-14 23:59", "", now));
+        assertEquals(expected, DeadlineParser.INSTANCE.parseExplicitDeadlineField(
+                "2026-10-14 23:59", now));
+    }
+
+    @Test
+    public void expiredStatusWithoutActualDeadlineStaysUnknown() {
+        long now = 1800000000000L;
+        assertEquals(0L, DeadlineParser.INSTANCE.parseTaskEndTime("已截止", "", now));
+        assertEquals(0L, DeadlineParser.INSTANCE.parseTaskEndTime("", "已过期", now));
+        assertEquals(0L, DeadlineParser.INSTANCE.parseTaskEndTime("作业已结束", "", now));
+    }
+
+    @Test
+    public void explicitDeadlineRemainsKnownAlongsideExpiredStatus() throws Exception {
+        long now = date("2026-10-17 12:00");
+        long expected = date("2026-10-14 23:59");
+        assertEquals(expected, DeadlineParser.INSTANCE.parseTaskEndTime(
+                "截止时间：2026-10-14 23:59 已截止", "", now));
+    }
+
+    @Test
     public void genericCourseEndTimeDoesNotHideAnActiveCourse() throws Exception {
         long now = date("2026-10-06 12:00");
         java.util.Map<String, String> course = Collections.singletonMap("endTime", "2026-01-01 00:00");

@@ -73,6 +73,49 @@ class ManualHomeworkStore(context: Context) {
         write(newArr)
     }
 
+    /**
+     * Restore a previously hidden manual homework without changing its stable
+     * id or local completion state. Older builds removed the row when it was
+     * permanently hidden, so this also recreates that row when necessary.
+     */
+    fun restore(
+        accountId: String,
+        id: String,
+        title: String,
+        courseName: String,
+        endTime: Long,
+        courseKey: String = "",
+        status: Int = Homework.PENDING
+    ) {
+        if (accountId.isBlank() || id.isBlank()) return
+        val arr = read()
+        var found = false
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            if (obj.optString("accountId") == accountId && obj.optString("id") == id) {
+                found = true
+                // Keep the user's current local completion state if the row
+                // already exists; hidden metadata is only a fallback.
+                if (!obj.has("status")) obj.put("status", status)
+                if (!obj.has("courseKey") && courseKey.isNotBlank()) obj.put("courseKey", courseKey)
+                break
+            }
+        }
+        if (!found) {
+            arr.put(
+                JSONObject()
+                    .put("id", id)
+                    .put("accountId", accountId)
+                    .put("title", title)
+                    .put("courseName", courseName)
+                    .put("endTime", endTime)
+                    .put("courseKey", courseKey)
+                    .put("status", status)
+            )
+        }
+        write(arr)
+    }
+
     /** 本地完成/取消完成，不代表学习通服务器已提交。 */
     fun setCompleted(accountId: String, id: String, completed: Boolean) {
         val arr = read()

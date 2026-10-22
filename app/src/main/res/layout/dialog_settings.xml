@@ -133,6 +133,12 @@
         android:textColor="@color/text_secondary"
         android:textSize="13sp" />
 
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="14dp"
+        android:background="#E5E7EB" />
+
     <!-- 权限放在设置底部，优先保证布局选项和课程管理在首屏可见 -->
     <View
         android:layout_width="match_parent"

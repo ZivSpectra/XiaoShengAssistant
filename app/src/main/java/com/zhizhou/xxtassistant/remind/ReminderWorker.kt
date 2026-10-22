@@ -16,10 +16,12 @@ class ReminderWorker(context: Context, params: WorkerParameters) : Worker(contex
         val title = inputData.getString(KEY_TITLE) ?: "作业"
         val course = inputData.getString(KEY_COURSE) ?: ""
         val minutesLeft = inputData.getLong(KEY_MINUTES_LEFT, 0L)
+        val endTime = inputData.getLong(KEY_END_TIME, 0L)
         val url = inputData.getString(KEY_URL) ?: ""
         val accountId = inputData.getString(KEY_ACCOUNT_ID) ?: ""
-        DebugLog.log(applicationContext, "WorkManager 提醒任务已触发：$title")
-        ReminderNotifier.notifyHomework(applicationContext, course, title, minutesLeft, url, accountId)
+        val reminderToken = inputData.getString(KEY_TOKEN) ?: ""
+        DebugLog.log(applicationContext, "WorkManager 提醒任务已触发")
+        ReminderNotifier.notifyHomework(applicationContext, course, title, minutesLeft, url, accountId, reminderToken, endTime)
         return Result.success()
     }
 
@@ -27,7 +29,9 @@ class ReminderWorker(context: Context, params: WorkerParameters) : Worker(contex
         const val KEY_TITLE = "title"
         const val KEY_COURSE = "course"
         const val KEY_MINUTES_LEFT = "minutes_left"
+        const val KEY_END_TIME = "end_time"
         const val KEY_URL = "url"
         const val KEY_ACCOUNT_ID = "account_id"
+        const val KEY_TOKEN = "reminder_token"
     }
 }

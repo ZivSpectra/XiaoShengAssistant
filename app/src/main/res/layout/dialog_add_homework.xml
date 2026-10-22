@@ -44,13 +44,6 @@
         android:text="@string/choose_course"
         style="?attr/materialButtonOutlinedStyle" />
 
-    <Spinner
-        android:id="@+id/spinner_hw_course"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="@drawable/bg_spinner"
-        android:visibility="gone" />
-
     <EditText
         android:id="@+id/et_new_course"
         android:layout_width="match_parent"

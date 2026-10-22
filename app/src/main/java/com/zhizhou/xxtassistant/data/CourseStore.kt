@@ -3,7 +3,6 @@ package com.zhizhou.xxtassistant.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.icu.text.Transliterator
-import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -26,6 +25,8 @@ class CourseStore(context: Context) {
         val cpi: String = "",
         val manual: Boolean = false,
         val lastUsedAt: Long = 0L,
+        /** First local insertion time, stable across automatic refreshes. */
+        val createdAt: Long = 0L,
         /** 最近一次从学习通同步到本地的时间，用于没有学期字段的课程归档。 */
         val lastSeenAt: Long = 0L
     ) {
@@ -46,6 +47,7 @@ class CourseStore(context: Context) {
         private const val KEY_LIST = "courses"
     }
 
+    @Synchronized
     fun upsertAutomatic(accountId: String, course: CourseItem) {
         val all = read().filterNot { it.accountId == accountId && it.key == course.key }.toMutableList()
         val previous = read().firstOrNull { it.accountId == accountId && it.key == course.key }
@@ -53,12 +55,14 @@ class CourseStore(context: Context) {
             accountId = accountId,
             manual = false,
             lastUsedAt = previous?.lastUsedAt ?: 0L,
+            createdAt = previous?.createdAt?.takeIf { it > 0L } ?: System.currentTimeMillis(),
             lastSeenAt = System.currentTimeMillis()
         )
         write(all)
     }
 
     /** 全量同步成功后移除已经不在学习通课程列表中的旧自动课程，手动课程始终保留。 */
+    @Synchronized
     fun removeStaleAutomatic(accountId: String, activeKeys: Set<String>) {
         write(read().filterNot {
             it.accountId == accountId && !it.manual && it.key !in activeKeys
@@ -66,6 +70,7 @@ class CourseStore(context: Context) {
     }
 
     /** 添加或复用账号内的手动课程。相同名称只保留一个快捷选项。 */
+    @Synchronized
     fun addManual(accountId: String, name: String): CourseItem? {
         val clean = name.trim()
         if (clean.isEmpty()) return null
@@ -77,6 +82,7 @@ class CourseStore(context: Context) {
             name = clean,
             manual = true,
             lastUsedAt = System.currentTimeMillis(),
+            createdAt = System.currentTimeMillis(),
             lastSeenAt = System.currentTimeMillis()
         )
         write(read() + item)
@@ -89,7 +95,7 @@ class CourseStore(context: Context) {
     fun list(accountId: String, recentFirst: Boolean = false): List<CourseItem> {
         val source = read().filter { it.accountId == accountId }
         if (recentFirst) {
-            return source.sortedWith(compareByDescending<CourseItem> { it.lastUsedAt }
+            return source.sortedWith(compareByDescending<CourseItem> { maxOf(it.lastUsedAt, it.createdAt) }
                 .thenBy { it.name }.thenBy { it.className }.thenBy { it.term })
         }
         fun sortKey(item: CourseItem): String {
@@ -119,16 +125,16 @@ class CourseStore(context: Context) {
     }
 
     private fun toLatin(name: String): String {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            @Suppress("NewApi")
-            return runCatching {
-                Transliterator.getInstance("Han-Latin; Latin-ASCII").transliterate(name.trim())
-            }.getOrDefault(name.trim())
-        }
-        // Android 26-28 没有可用的公开 ICU 转写 API，至少保持 ASCII 课程可稳定排序。
-        return name.trim()
+        // android.icu.text.Transliterator is available from API 24. The old
+        // API-level guard incorrectly disabled it on Android 8/9, putting all
+        // Chinese course names in '#' instead of their pinyin section.
+        @Suppress("NewApi")
+        return runCatching {
+            Transliterator.getInstance("Han-Latin; Latin-ASCII").transliterate(name.trim())
+        }.getOrDefault(name.trim())
     }
 
+    @Synchronized
     fun markUsed(accountId: String, key: String) {
         val all = read().map {
             if (it.accountId == accountId && it.key == key) it.copy(lastUsedAt = System.currentTimeMillis()) else it
@@ -139,6 +145,7 @@ class CourseStore(context: Context) {
     fun find(accountId: String, key: String): CourseItem? =
         list(accountId).firstOrNull { it.key == key }
 
+    @Synchronized
     fun removeManual(accountId: String, key: String) {
         write(read().filterNot { it.accountId == accountId && it.key == key && it.manual })
     }
@@ -165,6 +172,7 @@ class CourseStore(context: Context) {
                             cpi = o.optString("cpi"),
                             manual = o.optBoolean("manual", false),
                             lastUsedAt = o.optLong("lastUsedAt", 0L),
+                            createdAt = o.optLong("createdAt", o.optLong("lastSeenAt", 0L)),
                             lastSeenAt = o.optLong("lastSeenAt", 0L)
                         ))
                     }
@@ -189,6 +197,7 @@ class CourseStore(context: Context) {
                 .put("cpi", item.cpi)
                 .put("manual", item.manual)
                 .put("lastUsedAt", item.lastUsedAt)
+                .put("createdAt", item.createdAt)
                 .put("lastSeenAt", item.lastSeenAt))
         }
         prefs.edit().putString(KEY_LIST, arr.toString()).apply()
@@ -196,7 +205,7 @@ class CourseStore(context: Context) {
 
     private fun sort(source: List<CourseItem>, recentFirst: Boolean): List<CourseItem> {
         if (recentFirst) {
-            return source.sortedWith(compareByDescending<CourseItem> { maxOf(it.lastUsedAt, it.lastSeenAt) }
+            return source.sortedWith(compareByDescending<CourseItem> { maxOf(it.lastUsedAt, it.createdAt) }
                 .thenBy { it.name }.thenBy { it.className }.thenBy { it.term })
         }
         fun sortKey(item: CourseItem): String {

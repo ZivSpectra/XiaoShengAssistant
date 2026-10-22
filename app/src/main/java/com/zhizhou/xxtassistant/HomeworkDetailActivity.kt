@@ -11,6 +11,8 @@ import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import com.zhizhou.xxtassistant.data.AccountManager
+import com.zhizhou.xxtassistant.util.DebugLog
+import com.zhizhou.xxtassistant.util.WebViewCookieTarget
 
 /**
  * 作业详情页：用 WebView 打开学习通里对应的作业页面。
@@ -50,12 +52,23 @@ class HomeworkDetailActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?
-            ): Boolean = false
+            ): Boolean {
+                if (request?.isForMainFrame != true) return false
+                val target = request.url?.toString().orEmpty()
+                if (WebViewCookieTarget.isSecureLearningPlatformUrl(target)) return false
+                DebugLog.log(this@HomeworkDetailActivity, "已拦截作业详情页外部跳转")
+                return true
+            }
         }
 
         val loadPage = { webView.loadUrl(url) }
         if (accountId != null) {
-            restoreAccountCookies(AccountManager(this).getCookie(accountId), loadPage)
+            val accounts = AccountManager(this)
+            restoreAccountCookies(
+                accounts.getCookie(accountId),
+                accounts.getCookiesByDomain(accountId),
+                loadPage
+            )
         } else {
             loadPage()
         }
@@ -77,21 +90,26 @@ class HomeworkDetailActivity : AppCompatActivity() {
         val accountId = intent.getStringExtra("accountId")
         if (!accountId.isNullOrBlank()) {
             val manager = CookieManager.getInstance()
-            val cookie = listOf(
+            val domains = listOf(
                 "https://passport2.chaoxing.com",
                 "https://i.chaoxing.com",
                 "https://mooc1.chaoxing.com",
                 "https://mooc1-api.chaoxing.com",
                 "https://mooc2-ans.chaoxing.com"
-            ).mapNotNull { manager.getCookie(it) }.joinToString("; ")
-            if (cookie.isNotBlank()) AccountManager(this).updateCookie(accountId, cookie)
+            ).mapNotNull { domain -> manager.getCookie(domain)?.takeIf { it.isNotBlank() }?.let { domain to it } }
+                .toMap()
+            if (domains.isNotEmpty()) AccountManager(this).updateCookiesByDomain(accountId, domains)
         }
         super.onDestroy()
         webView.destroy()
     }
 
-    private fun restoreAccountCookies(cookie: String?, afterRestore: () -> Unit) {
-        if (cookie.isNullOrBlank()) {
+    private fun restoreAccountCookies(
+        cookie: String?,
+        cookiesByDomain: Map<String, String>,
+        afterRestore: () -> Unit
+    ) {
+        if (cookie.isNullOrBlank() && cookiesByDomain.isEmpty()) {
             afterRestore()
             return
         }
@@ -104,11 +122,31 @@ class HomeworkDetailActivity : AppCompatActivity() {
             "https://mooc1-api.chaoxing.com",
             "https://mooc2-ans.chaoxing.com"
         )
-        val pairs = cookie.split(';').map { it.trim() }.filter { it.contains('=') }
-        manager.removeAllCookies {
-            domains.forEach { domain -> pairs.forEach { manager.setCookie(domain, it) } }
-            manager.flush()
-            runOnUiThread { afterRestore() }
+        // Keep the process-wide WebView jar intact and restore each cookie to
+        // its original host. Flattening every route/JSESSIONID onto every
+        // domain is what previously caused intermittent 400 responses.
+        val source = if (cookiesByDomain.isNotEmpty()) cookiesByDomain else
+            domains.associateWith { cookie.orEmpty() }
+        val writes = source.flatMap { (domain, raw) ->
+            // AccountManager stores normalized host names (without a scheme),
+            // while WebView requires an absolute URL when setting a cookie.
+            // Keep compatibility with older entries that already contain one.
+            val target = WebViewCookieTarget.fromDomain(domain)
+            raw.split(';').map { it.trim() }.filter { it.contains('=') }.map { target to it }
+        }
+        if (writes.isEmpty()) {
+            afterRestore()
+            return
+        }
+        val remaining = java.util.concurrent.atomic.AtomicInteger(writes.size)
+        writes.forEach { (domain, pair) ->
+            manager.setCookie(domain, pair) {
+                if (remaining.decrementAndGet() == 0) {
+                    manager.flush()
+                    runOnUiThread(afterRestore)
+                }
+            }
         }
     }
+
 }

@@ -4,14 +4,23 @@
 
     <!-- 主页 -->
     <string name="main_title">小笙助手</string>
-    <string name="main_subtitle_empty">尚未登录账号</string>
+    <string name="homework_page_title">作业</string>
     <string name="stat_label_unfinished">未完成</string>
     <string name="stat_label_done">已完成</string>
     <string name="stat_label_missed">欠账</string>
     <string name="btn_refresh">重新检查</string>
     <string name="btn_add_homework">添加作业</string>
-    <string name="btn_remind_setting">提醒设置</string>
-    <string name="empty_hint">暂无作业数据\n点「刷新作业」或「添加作业」试试</string>
+    <string name="nav_today">今天</string>
+    <string name="nav_schedule">课程表</string>
+    <string name="nav_homework">作业</string>
+    <string name="nav_mine">我的</string>
+    <string name="course_import_url_hint">输入学校教务系统 HTTPS 网址</string>
+    <string name="course_import_status_initial">输入学校提供的 HTTPS 教务网址，登录后进入个人课表页面。App 不会记录密码。</string>
+    <string name="course_import_https_blocked">已阻止非 HTTPS 页面。请使用学校提供的 HTTPS 教务网址。</string>
+    <string name="course_import_page_rejected">暂不能读取：%1$s</string>
+    <string name="course_import_no_courses">已确认课表页面，但还没有识别到课程单元，请等待课程加载完成后再读取。</string>
+    <string name="course_import_read_timeout">读取超时：课表仍未加载。如果课表位于跨域 iframe 中，浏览器安全机制不允许小笙读取，请改用教务系统导出文件或表格导入。</string>
+    <string name="empty_hint">暂无作业数据\n点「重新检查」或「添加作业」试试</string>
 
     <!-- 设置 -->
     <string name="settings_title">设置</string>
@@ -23,17 +32,24 @@
     <string name="settings_layout_double">双列排列</string>
     <string name="settings_saved">设置已保存</string>
     <string name="permission_section_label">后台提醒与系统权限</string>
-    <string name="open_notification_permission">开启通知、声音与锁屏显示</string>
+    <string name="open_notification_permission">设置锁屏与悬浮通知</string>
+    <string name="open_notification_display_settings">打开锁屏与悬浮通知设置</string>
     <string name="open_exact_alarm_permission">允许精确闹钟</string>
     <string name="open_battery_permission">允许后台运行（关闭电池优化）</string>
     <string name="reminder_onboarding_notification_title">先开启通知提醒</string>
-    <string name="reminder_onboarding_notification_message">为了在锁屏时看到作业截止提醒，请允许通知、声音和锁屏显示。小笙只会在本机显示提醒。</string>
+    <string name="reminder_onboarding_notification_message">请先允许通知权限，并确认提醒频道允许在锁屏显示。悬浮/弹出通知和声音属于可选增强，不想打扰时可以保持关闭；“熄屏通知”还需要手机系统开启熄屏显示，小笙无法代替你修改这个系统开关。</string>
     <string name="reminder_onboarding_exact_title">再开启精确闹钟</string>
     <string name="reminder_onboarding_exact_message">精确闹钟可以让截止前提醒更准时。系统页面会单独询问一次授权。</string>
     <string name="reminder_onboarding_battery_title">最后允许后台运行</string>
     <string name="reminder_onboarding_battery_message">关闭电池优化可以减少息屏时提醒被延迟。不同手机的后台策略仍可能需要在系统管家中开启自启动。</string>
     <string name="reminder_onboarding_open">去开启</string>
     <string name="reminder_onboarding_later">稍后设置</string>
+    <string name="reminder_onboarding_return_title">请确认系统设置</string>
+    <string name="reminder_onboarding_return_notification_message">请确认刚才的系统页面中已允许提醒频道在锁屏显示。悬浮/弹出通知可以按需要选择，不开启也不会阻止普通锁屏提醒；如果手机还有“熄屏通知”选项，还需要先开启系统的熄屏显示。</string>
+    <string name="reminder_onboarding_return_exact_message">请确认“允许精确闹钟”已经开启。没有开启时，提醒仍会发送，但时间可能受到系统省电影响。</string>
+    <string name="reminder_onboarding_return_battery_message">请确认已允许小笙助手后台运行或关闭电池优化。部分手机还需要在系统管家中开启自启动。</string>
+    <string name="reminder_onboarding_confirm">我已开启，继续</string>
+    <string name="reminder_onboarding_not_yet">还没开启</string>
 
     <!-- 登录页 -->
     <string name="login_tagline">自动抓取作业 · 截止前多节点提醒</string>
@@ -63,7 +79,6 @@
     <string name="reminder_global_hint">提醒节点将沿用「提醒设置」里的全局配置，添加后自动生效</string>
     <string name="reminder_intro">可多选：到点前会发通知提醒你（每次抓取后自动生效）</string>
     <string name="exact_alarm_label">精确闹钟模式（尽量准时，可能需要系统授权）</string>
-    <string name="test_lock_notification">测试锁屏通知（延迟 10 秒）</string>
     <string name="advance_one_day">提前 1 天</string>
     <string name="advance_twelve_hours">提前 12 小时</string>
     <string name="advance_three_hours">提前 3 小时</string>

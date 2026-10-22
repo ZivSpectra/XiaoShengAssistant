@@ -14,6 +14,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.zhizhou.xxtassistant.data.AccountManager
 import com.zhizhou.xxtassistant.data.XueXiTongApi
+import com.zhizhou.xxtassistant.util.WebViewCookieTarget
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -47,10 +48,12 @@ class VerificationActivity : AppCompatActivity() {
         title = "学习通验证"
 
         accountId = intent.getStringExtra(EXTRA_ACCOUNT_ID).orEmpty()
-        val accountCookie = AccountManager(this).getCookie(accountId).orEmpty()
-        val targetUrl = intent.getStringExtra(EXTRA_URL).orEmpty().ifBlank {
-            "https://mooc1.chaoxing.com/mooc-ans/mycourse"
-        }
+        val accounts = AccountManager(this)
+        val accountCookie = accounts.getCookie(accountId).orEmpty()
+        val accountCookiesByDomain = accounts.getCookiesByDomain(accountId)
+        val targetUrl = intent.getStringExtra(EXTRA_URL).orEmpty()
+            .takeIf { WebViewCookieTarget.isSecureLearningPlatformUrl(it) }
+            ?: "https://mooc1.chaoxing.com/mooc-ans/mycourse"
 
         webView = findViewById(R.id.webview_verification)
         progress = findViewById(R.id.progress_verification)
@@ -60,7 +63,10 @@ class VerificationActivity : AppCompatActivity() {
         settings.cacheMode = WebSettings.LOAD_DEFAULT
         CookieManager.getInstance().setAcceptCookie(true)
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                if (request?.isForMainFrame != true) return false
+                return !WebViewCookieTarget.isSecureLearningPlatformUrl(request.url.toString())
+            }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 progress.visibility = View.VISIBLE
@@ -75,29 +81,35 @@ class VerificationActivity : AppCompatActivity() {
             if (!syncing) syncCookies(accountCookie)
         }
 
-        restoreCookies(accountCookie) { webView.loadUrl(targetUrl) }
+        restoreCookies(accountCookie, accountCookiesByDomain) { webView.loadUrl(targetUrl) }
     }
 
-    private fun restoreCookies(cookie: String, after: () -> Unit) {
+    private fun restoreCookies(cookie: String, byDomain: Map<String, String>, after: () -> Unit) {
         val manager = CookieManager.getInstance()
-        manager.removeAllCookies {
-            val pairs = cookie.split(';')
-                .map { it.trim() }
-                .filter { it.contains('=') }
-            val writesRemaining = AtomicInteger(pairs.size * cookieDomains.size)
-            if (writesRemaining.get() == 0) {
-                manager.flush()
-                runOnUiThread(after)
-                return@removeAllCookies
-            }
-            pairs.forEach { pair ->
-                cookieDomains.forEach { domain ->
-                    manager.setCookie(domain, pair) {
-                        if (writesRemaining.decrementAndGet() == 0) {
-                            manager.flush()
-                            runOnUiThread(after)
-                        }
-                    }
+        // CookieManager is process-wide. Do not clear it here: verification is
+        // an in-place refresh for the active account, and removeAllCookies()
+        // can erase a different WebView's valid session mid-request.
+        val domainCookies = if (byDomain.isNotEmpty()) byDomain else
+            cookieDomains.associateWith { cookie }
+        val writes = domainCookies.flatMap { (domain, raw) ->
+            // Stored domain keys are host names, but CookieManager.setCookie
+            // only accepts an absolute URL. Without this conversion the
+            // verification page appeared to sync while the session was not
+            // restored on the next open.
+            val target = WebViewCookieTarget.fromDomain(domain)
+            raw.split(';').map { it.trim() }.filter { it.contains('=') }.map { target to it }
+        }
+        val writesRemaining = AtomicInteger(writes.size)
+        if (writesRemaining.get() == 0) {
+            manager.flush()
+            runOnUiThread(after)
+            return
+        }
+        writes.forEach { (domain, pair) ->
+            manager.setCookie(domain, pair) {
+                if (writesRemaining.decrementAndGet() == 0) {
+                    manager.flush()
+                    runOnUiThread { after() }
                 }
             }
         }
@@ -110,15 +122,19 @@ class VerificationActivity : AppCompatActivity() {
         button.text = "正在同步并确认…"
         val manager = CookieManager.getInstance()
         manager.flush()
-        val current = buildString {
-            cookieDomains.mapNotNull { manager.getCookie(it) }
-                .flatMap { it.split(';') }
-                .map { it.trim() }
-                .filter { it.contains('=') }
-                .forEach { append(it).append("; ") }
+        val currentByDomain = buildMap {
+            cookieDomains.forEach { domain ->
+                manager.getCookie(domain)?.takeIf { it.isNotBlank() }?.let { put(domain, it) }
+            }
         }
         val accounts = AccountManager(this)
-        if (accountId.isBlank() || !accounts.updateCookie(accountId, mergeCookieText(previous, current))) {
+        val current = currentByDomain.values.joinToString("; ")
+        val saved = if (accountId.isBlank()) false else if (currentByDomain.isNotEmpty()) {
+            accounts.updateCookiesByDomain(accountId, currentByDomain)
+        } else {
+            accounts.updateCookie(accountId, mergeCookieText(previous, current))
+        }
+        if (!saved) {
             syncing = false
             button.isEnabled = true
             button.text = getString(R.string.verification_done)

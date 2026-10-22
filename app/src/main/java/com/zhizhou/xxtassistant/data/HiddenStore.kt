@@ -36,8 +36,32 @@ class HiddenStore(context: Context) {
         val hiddenAt: Long,
         val source: String = SOURCE_AUTO,
         val permanent: Boolean = true,
-        val scopeKey: String = ""
+        val scopeKey: String = "",
+        /** Local completion state used when restoring legacy manual rows. */
+        val status: Int = Homework.PENDING
     )
+
+    /** Stable selection key; an id alone is not unique across courses. */
+    fun selectionKey(item: HiddenItem): String =
+        "${item.courseKey.ifBlank { "course:${item.course}" }}:${item.id}"
+
+    private fun sameHomework(
+        item: HiddenItem,
+        id: String,
+        courseKey: String,
+        course: String = ""
+    ): Boolean {
+        if (item.id != id) return false
+        if (item.courseKey.isNotBlank() && courseKey.isNotBlank()) {
+            return item.courseKey == courseKey
+        }
+        if (item.course.isNotBlank() && course.isNotBlank()) {
+            return item.course == course
+        }
+        // Legacy records did not always include a course key/name. In that
+        // case the id is the only identity available, so keep compatibility.
+        return true
+    }
 
     private fun readMap(): Map<String, MutableList<HiddenItem>> {
         val raw = prefs.getString(KEY_MAP, "{}") ?: "{}"
@@ -61,7 +85,8 @@ class HiddenStore(context: Context) {
                             hiddenAt = obj.optLong("hiddenAt"),
                             source = obj.optString("source", SOURCE_AUTO),
                             permanent = obj.optBoolean("permanent", true),
-                            scopeKey = obj.optString("scopeKey")
+                            scopeKey = obj.optString("scopeKey"),
+                            status = obj.optInt("status", Homework.PENDING)
                         )
                     )
                 }
@@ -87,6 +112,7 @@ class HiddenStore(context: Context) {
                         .put("source", item.source)
                         .put("permanent", item.permanent)
                         .put("scopeKey", item.scopeKey)
+                        .put("status", item.status)
                 )
             }
             json.put(k, arr)
@@ -103,13 +129,14 @@ class HiddenStore(context: Context) {
         courseKey: String = "",
         source: String = SOURCE_AUTO,
         permanent: Boolean = true,
-        scopeKey: String = ""
+        scopeKey: String = "",
+        status: Int = Homework.PENDING
     ) {
         val map = readMap().toMutableMap()
         val list = map.getOrPut(accountId) { mutableListOf() }
         // 重复隐藏同一条时去重
-        list.removeAll { it.id == id && (courseKey.isBlank() || it.courseKey == courseKey) }
-        list.add(HiddenItem(id, title, course, courseKey, endTime, System.currentTimeMillis(), source, permanent, scopeKey))
+        list.removeAll { sameHomework(it, id, courseKey, course) }
+        list.add(HiddenItem(id, title, course, courseKey, endTime, System.currentTimeMillis(), source, permanent, scopeKey, status))
         writeMap(map)
     }
 
@@ -118,18 +145,18 @@ class HiddenStore(context: Context) {
         (readMap()[accountId] ?: emptyList()).sortedByDescending { it.hiddenAt }
 
     /** 单独恢复一条 */
-    fun restore(accountId: String, id: String, courseKey: String = "") {
+    fun restore(accountId: String, id: String, courseKey: String = "", course: String = "") {
         val map = readMap().toMutableMap()
         map[accountId]?.removeAll {
-            it.id == id && (courseKey.isBlank() || it.courseKey == courseKey)
+            sameHomework(it, id, courseKey, course)
         }
         writeMap(map)
     }
 
     /** 批量恢复多条 */
-    fun restoreAll(accountId: String, ids: Collection<String>) {
+    fun restoreAll(accountId: String, selectionKeys: Collection<String>) {
         val map = readMap().toMutableMap()
-        map[accountId]?.removeAll { it.id in ids }
+        map[accountId]?.removeAll { selectionKey(it) in selectionKeys }
         writeMap(map)
     }
 
@@ -137,13 +164,23 @@ class HiddenStore(context: Context) {
     fun hiddenIds(accountId: String, scopeKey: String = ""): Set<String> =
         (readMap()[accountId] ?: emptyList())
             .filter { it.permanent || it.scopeKey == scopeKey }
-            .map { it.id }
+            .map(::selectionKey)
             .toSet()
 
     fun isHidden(accountId: String, homework: Homework, scopeKey: String = ""): Boolean =
         (readMap()[accountId] ?: emptyList()).any {
-            it.id == homework.id &&
-                (it.courseKey.isBlank() || it.courseKey == homework.courseKey) &&
+            sameHomework(it, homework.id, homework.courseKey, homework.courseName) &&
                 (it.permanent || it.scopeKey == scopeKey)
+        }
+
+    /**
+     * Reminders are global to the account, rather than tied to the currently
+     * selected date range. A temporary list hide must therefore not cancel a
+     * future reminder when the user switches filters.
+     */
+    fun isPermanentlyHidden(accountId: String, homework: Homework): Boolean =
+        (readMap()[accountId] ?: emptyList()).any {
+            sameHomework(it, homework.id, homework.courseKey, homework.courseName) &&
+                it.permanent
         }
 }

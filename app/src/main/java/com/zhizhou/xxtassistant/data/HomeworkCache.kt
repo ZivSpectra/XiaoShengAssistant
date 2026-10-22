@@ -18,7 +18,14 @@ class HomeworkCache(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("xxt_cache", Context.MODE_PRIVATE)
 
-    /** 保存某账号的自动作业缓存（只存自动作业，手动作业在 ManualHomeworkStore 里） */
+    /**
+     * 保存某账号的自动作业缓存（只存自动作业，手动作业在 ManualHomeworkStore 里）。
+     *
+     * save 与边抓边显示阶段的 upsert 都会读出整段 JSON 后再写回；如果两个线程
+     * 同时执行，后写入的一方可能把另一方刚加入的作业覆盖掉。实例级串行化让
+     * 后台最终快照与主线程增量更新不会互相丢数据。
+     */
+    @Synchronized
     fun save(uid: String, homeworks: List<Homework>) {
         val root = JSONObject()
         homeworks.filter { !it.isManual() }.forEach { hw ->
@@ -33,6 +40,7 @@ class HomeworkCache(context: Context) {
     }
 
     /** 更新缓存中的单条自动作业，不改变原有缓存时间。 */
+    @Synchronized
     fun upsert(uid: String, homework: Homework): Homework {
         if (homework.isManual()) return homework
         val root = readRoot(uid)
@@ -44,6 +52,7 @@ class HomeworkCache(context: Context) {
         return merged
     }
 
+    @Synchronized
     fun removeCourse(uid: String, courseKey: String) {
         val root = try {
             JSONObject(prefs.getString(uid, "{}") ?: "{}")
@@ -60,7 +69,17 @@ class HomeworkCache(context: Context) {
         prefs.edit().putString(uid, root.toString()).apply()
     }
 
+    /** Remove one automatic item only after an explicit detail probe confirmed it is gone. */
+    @Synchronized
+    fun remove(uid: String, homework: Homework) {
+        if (homework.isManual()) return
+        val root = readRoot(uid)
+        root.remove("${homework.courseKey.ifBlank { "_" }}:${homework.id}")
+        prefs.edit().putString(uid, root.toString()).apply()
+    }
+
     /** 读取某账号上次缓存的自动作业（没有则返回空列表） */
+    @Synchronized
     fun load(uid: String): List<Homework> {
         val raw = prefs.getString(uid, null) ?: return emptyList()
         return try {
@@ -78,16 +97,19 @@ class HomeworkCache(context: Context) {
     }
 
     /** 没有时间戳的旧缓存视为过期，首次升级时会自动刷新一次。 */
+    @Synchronized
     fun isStale(uid: String, maxAgeMs: Long): Boolean {
         val savedAt = prefs.getLong(savedAtKey(uid), 0L)
         return savedAt <= 0L || System.currentTimeMillis() - savedAt >= maxAgeMs
     }
 
     /** 记录最近一次自动抓取尝试，避免验证码/网络失败时每次回到页面都重复请求。 */
+    @Synchronized
     fun markFetchAttempt(uid: String) {
         prefs.edit().putLong(fetchAttemptKey(uid), System.currentTimeMillis()).apply()
     }
 
+    @Synchronized
     fun isFetchAttemptCoolingDown(uid: String, cooldownMs: Long): Boolean {
         val attemptedAt = prefs.getLong(fetchAttemptKey(uid), 0L)
         return attemptedAt > 0L && System.currentTimeMillis() - attemptedAt < cooldownMs
@@ -120,6 +142,7 @@ class HomeworkCache(context: Context) {
         put("courseKey", hw.courseKey)
         put("officialEndTime", hw.officialEndTime ?: 0L)
         put("deadlineOverridden", hw.deadlineOverridden)
+        put("deadlineVerified", hw.deadlineVerified)
     }
 
     private fun fromJson(o: JSONObject) = Homework(
@@ -133,6 +156,7 @@ class HomeworkCache(context: Context) {
         source = o.optInt("source", Homework.AUTO),
         courseKey = o.optString("courseKey", ""),
         officialEndTime = o.optLong("officialEndTime", 0L).takeIf { it > 0L },
-        deadlineOverridden = o.optBoolean("deadlineOverridden", false)
+        deadlineOverridden = o.optBoolean("deadlineOverridden", false),
+        deadlineVerified = o.optBoolean("deadlineVerified", false)
     )
 }

@@ -71,7 +71,7 @@ object DeadlineParser {
             val hours = m.groupValues[2].toLongOrNull() ?: 0L
             val minutes = m.groupValues[3].toLongOrNull() ?: 0L
             if (days > 0L || hours > 0L || minutes > 0L) {
-                val currentTime = System.currentTimeMillis()
+                val currentTime = now
                 val deadline = currentTime + days * 86400000L + hours * 3600000L + minutes * 60000L
                 if (deadline > currentTime) return deadline
             }
@@ -79,7 +79,7 @@ object DeadlineParser {
 
         Regex("""(?:endTime|deadline|end_time|closeTime|close_time|workEndTime|work_end_time|endDate|endDateTime|stopTime|overTime)\s*["']?\s*[=:]\s*["']?(\d{13}|\d{10})""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1)?.let { raw ->
-                epochFrom(raw)?.let { if (it < System.currentTimeMillis() + TEN_YEARS_MS) return it }
+                epochFrom(raw)?.let { if (it < now + TEN_YEARS_MS) return it }
             }
         Regex("""(?:endTime|deadline|end_time|closeTime|close_time|workEndTime|work_end_time|endDate|endDateTime|stopTime|overTime)\s*["']?\s*[=:]\s*["']([^"']{8,40})["']""", RegexOption.IGNORE_CASE)
             .findAll(html).forEach { match ->
@@ -115,39 +115,83 @@ object DeadlineParser {
 
     fun parseTaskEndTime(remainText: String, inner: String, now: Long = System.currentTimeMillis()): Long {
         val source = "$remainText $inner"
-        Regex("""(?<!\d)(\d{10}|\d{13})(?!\d)""").find(source)?.groupValues?.get(1)?.let { raw ->
-            epochFrom(raw)?.let { if (it < now + TEN_YEARS_MS) return it }
+        // A list row often contains publication time, activity time and other dates.
+        // Do not treat an arbitrary timestamp as a deadline.  Only a clearly named
+        // deadline/end field may provide an absolute date or epoch value here.
+        labeledEpoch(source)?.let { epoch ->
+            if (epoch < now + TEN_YEARS_MS) return epoch
+        }
+        labeledDate(source)?.let { date ->
+            if (date > 0L) return date
         }
 
-        val normalized = source
-            .replace('年', '-')
-            .replace('月', '-')
-            .replace('日', ' ')
-            .replace('时', ':')
-            .replace('点', ':')
-            .replace('分', ' ')
-        val timeRe = Regex("""(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+|T)?(\d{1,2})?(?::(\d{1,2}))?""")
-        timeRe.find(normalized)?.groupValues?.let { t ->
-            val s = "${t[1]}-${t[2].padStart(2, '0')}-${t[3].padStart(2, '0')} " +
-                "${t.getOrNull(4).orEmpty().ifBlank { "00" }.padStart(2, '0')}:" +
-                "${t.getOrNull(5).orEmpty().ifBlank { "00" }.padStart(2, '0')}"
-            parseDateText(s)?.let { if (it > 0L) return it }
-        }
-
-        val dayMatch = Regex("""(\d+)\s*天""").find(remainText)
-        val hourMatch = Regex("""(\d+)\s*(?:小时|时)""").find(remainText)
-        val minuteMatch = Regex("""(\d+)\s*(?:分钟|分)""").find(remainText)
+        // Relative text is accepted only when it carries its own deadline marker.
+        // For example, "发布时间：1天前" must remain unknown.
+        val relativeSource = source.takeIf {
+            Regex("""(?:剩余时间|剩余|还剩|距截止|距离截止)""").containsMatchIn(it)
+        } ?: ""
+        val dayMatch = Regex("""(\d+)\s*天""").find(relativeSource)
+        val hourMatch = Regex("""(\d+)\s*(?:小时|时)""").find(relativeSource)
+        val minuteMatch = Regex("""(\d+)\s*(?:分钟|分)""").find(relativeSource)
         val day = dayMatch?.groupValues?.get(1)?.toLongOrNull() ?: 0L
         val hour = hourMatch?.groupValues?.get(1)?.toLongOrNull() ?: 0L
         val minute = minuteMatch?.groupValues?.get(1)?.toLongOrNull() ?: 0L
         if (dayMatch != null || hourMatch != null || minuteMatch != null) {
             return now + day * 86400000L + hour * 3600000L + minute * 60000L
         }
-        if (remainText.contains("已截止") || remainText.contains("已过期") || remainText.contains("已结束")) {
-            return now - 1000L
+        // A status label only tells us that the task is no longer open. It does
+        // not contain the actual deadline and must never be turned into a
+        // fabricated timestamp (for example, `now - 1000`). Keeping this
+        // value unknown lets the UI distinguish "expired with a known time"
+        // from "expired, but the source did not expose its deadline".
+        if (source.contains("已截止") || source.contains("已过期") || source.contains("已结束")) {
+            return 0L
         }
         return 0L
     }
+
+    /**
+     * Parse a value taken from an explicitly named JSON field such as `deadline`
+     * or `endTime`.  The value itself has no label, so callers must only use this
+     * method after selecting a trusted deadline field; arbitrary `time` fields
+     * must not be passed here.
+     */
+    fun parseExplicitDeadlineField(value: String, now: Long = System.currentTimeMillis()): Long {
+        val raw = value.trim()
+        if (raw.isEmpty()) return 0L
+        epochFrom(raw)?.let { epoch ->
+            if (epoch < now + TEN_YEARS_MS) return epoch
+        }
+        parseDateText(raw)?.let { if (it > 0L) return it }
+        val relative = if (Regex("""(?:\d+)\s*(?:天|小时|时|分钟|分)""").containsMatchIn(raw)) {
+            parseTaskEndTime("剩余 $raw", "", now)
+        } else {
+            0L
+        }
+        return relative
+    }
+
+    private fun labeledEpoch(source: String): Long? {
+        val label = deadlineLabelPattern()
+        return Regex("""$label\D{0,80}(\d{10}|\d{13})(?!\d)""", RegexOption.IGNORE_CASE)
+            .find(source)?.groupValues?.getOrNull(1)?.let(::epochFrom)
+    }
+
+    private fun labeledDate(source: String): Long? {
+        val label = deadlineLabelPattern()
+        val match = Regex(
+            """$label\D{0,80}(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})[日]?(?:\s*(\d{1,2})?[:时点](\d{1,2})(?:分)?)?""",
+            RegexOption.IGNORE_CASE
+        ).find(source) ?: return null
+        val g = match.groupValues
+        val text = "${g[1]}-${g[2].padStart(2, '0')}-${g[3].padStart(2, '0')} " +
+            "${g.getOrNull(4).orEmpty().ifBlank { "00" }.padStart(2, '0')}:" +
+            "${g.getOrNull(5).orEmpty().ifBlank { "00" }.padStart(2, '0')}"
+        return parseDateText(text)
+    }
+
+    private fun deadlineLabelPattern(): String =
+        "(?:截止时间|截止日期|作业截止|结束时间|截止|deadline|endTime|end_time|closeTime|close_time|workEndTime|work_end_time|endDate|endDateTime|stopTime|overTime)"
 
     fun parseDateText(raw: String): Long? {
         val normalized = raw.trim()

@@ -1,72 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 主页布局：标题栏 + 账号栏 + 统计卡片 + 按钮行 + 作业列表 -->
+<!-- 作业页布局：标题 + 筛选 + 统计卡片 + 操作行 + 作业列表 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <!-- ===== 标题栏（右上角设置图标） ===== -->
-    <LinearLayout
+    <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:paddingStart="20dp"
-        android:paddingEnd="12dp"
-        android:paddingTop="14dp"
-        android:paddingBottom="10dp">
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/tv_main_title"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/main_title"
-                android:textColor="@color/text_primary"
-                android:textSize="22sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/tv_main_subtitle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="@string/main_subtitle_empty"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <ImageButton
-            android:id="@+id/btn_settings"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/settings_title"
-            android:src="@drawable/ic_settings" />
-    </LinearLayout>
-
-    <!-- ===== 当前账号 ===== -->
-    <LinearLayout
-        android:visibility="gone"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingStart="20dp"
-        android:paddingEnd="20dp">
-
-        <Spinner
-            android:id="@+id/spinner_account"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="@drawable/bg_spinner" />
-    </LinearLayout>
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="18dp"
+        android:layout_marginEnd="20dp"
+        android:text="@string/homework_page_title"
+        android:textColor="@color/text_primary"
+        android:textSize="28sp"
+        android:textStyle="normal" />
 
     <Button
         android:id="@+id/btn_date_filter"
@@ -74,7 +23,7 @@
         android:layout_height="wrap_content"
         android:layout_marginStart="20dp"
         android:layout_marginEnd="20dp"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="10dp"
         android:text="@string/filter_range"
         style="?attr/materialButtonOutlinedStyle" />
 
@@ -86,8 +35,8 @@
         android:layout_marginEnd="20dp"
         android:layout_marginTop="14dp"
         app:cardBackgroundColor="@color/surface"
-        app:cardCornerRadius="16dp"
-        app:cardElevation="2dp">
+        app:cardCornerRadius="12dp"
+        app:cardElevation="1dp">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -212,14 +161,6 @@
             android:text="@string/btn_add_homework"
             style="?attr/materialButtonOutlinedStyle" />
 
-        <Button
-            android:id="@+id/btn_remind_setting"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:text="@string/btn_remind_setting"
-            style="?attr/materialButtonOutlinedStyle" />
     </LinearLayout>
 
     <!-- ===== 小笙工作状态卡（抓取时显示，拟人化） ===== -->
@@ -332,6 +273,7 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
+        <!-- Two rows keep the labels comfortably tappable on narrow phones. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -345,8 +287,9 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:minWidth="0dp"
-                android:paddingStart="2dp"
-                android:paddingEnd="2dp"
+                android:minHeight="48dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:text="@string/batch_complete" />
 
             <Button
@@ -354,23 +297,31 @@
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
+                android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:minWidth="0dp"
-                android:paddingStart="2dp"
-                android:paddingEnd="2dp"
+                android:minHeight="48dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:text="@string/batch_hide" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
 
             <Button
                 android:id="@+id/btn_batch_pin"
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
                 android:layout_weight="1"
                 android:minWidth="0dp"
-                android:paddingStart="2dp"
-                android:paddingEnd="2dp"
+                android:minHeight="48dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:text="@string/batch_pin" />
 
             <Button
@@ -378,12 +329,22 @@
                 style="?attr/materialButtonStyle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
+                android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:minWidth="0dp"
-                android:paddingStart="2dp"
-                android:paddingEnd="2dp"
+                android:minHeight="48dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:text="@string/batch_cancel" />
         </LinearLayout>
     </LinearLayout>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/main_bottom_navigation"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/surface"
+        android:elevation="8dp"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/main_bottom_nav_menu" />
 </LinearLayout>

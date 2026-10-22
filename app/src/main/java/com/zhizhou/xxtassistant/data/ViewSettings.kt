@@ -26,6 +26,7 @@ class ViewSettings(context: Context) {
         private const val KEY_FILTER_START = "filter_start_day"
         private const val KEY_FILTER_END = "filter_end_day"
         private const val KEY_FILTER_ALL = "filter_all"
+        private const val KEY_FILTER_RANGE_CUSTOMIZED = "filter_range_customized"
         private const val KEY_COURSE_SORT_RECENT = "course_sort_recent"
 
         fun startOfDay(time: Long = System.currentTimeMillis()): Long =
@@ -67,6 +68,14 @@ class ViewSettings(context: Context) {
     var filterAll: Boolean
         get() = prefs.getBoolean(KEY_FILTER_ALL, false)
         set(v) = prefs.edit().putBoolean(KEY_FILTER_ALL, v).apply()
+
+    /** True after the user explicitly chooses a date range. */
+    var filterRangeCustomized: Boolean
+        get() = prefs.getBoolean(
+            KEY_FILTER_RANGE_CUSTOMIZED,
+            prefs.contains(KEY_FILTER_START) || prefs.contains(KEY_FILTER_END)
+        )
+        set(v) = prefs.edit().putBoolean(KEY_FILTER_RANGE_CUSTOMIZED, v).apply()
 
     /** 课程选择器排序：true=最近使用，false=拼音首字母。 */
     var courseSortRecent: Boolean

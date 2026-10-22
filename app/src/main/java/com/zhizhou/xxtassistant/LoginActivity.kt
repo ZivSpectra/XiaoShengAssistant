@@ -14,7 +14,10 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.zhizhou.xxtassistant.data.AccountManager
+import com.zhizhou.xxtassistant.data.AccountProfileStore
+import com.zhizhou.xxtassistant.data.AccountNameParser
 import com.zhizhou.xxtassistant.util.DebugLog
+import com.zhizhou.xxtassistant.util.WebViewCookieTarget
 
 /**
  * 登录页 —— 单账号登录；退出后可更换账号。
@@ -98,7 +101,13 @@ class LoginActivity : AppCompatActivity() {
 
         setupWebView()
         loginReady = true
-        webView.loadUrl(LOGIN_URL)
+        // CookieManager is process-global. Starting a new login with a stale
+        // previous UID can otherwise silently save the wrong account.
+        CookieManager.getInstance().removeAllCookies {
+            runOnUiThread {
+                if (::webView.isInitialized && !isFinishing) webView.loadUrl(LOGIN_URL)
+            }
+        }
     }
 
     private fun setupWebView() {
@@ -112,7 +121,13 @@ class LoginActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?
-            ): Boolean = false
+            ): Boolean {
+                if (request?.isForMainFrame != true) return false
+                val target = request.url?.toString().orEmpty()
+                if (WebViewCookieTarget.isSecureLearningPlatformUrl(target)) return false
+                DebugLog.log(this@LoginActivity, "已拦截登录页外部跳转")
+                return true
+            }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
@@ -149,6 +164,7 @@ class LoginActivity : AppCompatActivity() {
             1 -> {
                 // 主站加载完成（onPageFinished 触发）→ 去课程站种 mooc1 Cookie
                 if (pageUrl != null) {
+                    if (!isExpectedHost(pageUrl, "i.chaoxing.com")) return restartLoginAfterRedirect()
                     capturePhase = 2
                     lastNavTime = now
                     webView.loadUrl(SEED_URL_COURSE)
@@ -162,6 +178,7 @@ class LoginActivity : AppCompatActivity() {
             2 -> {
                 // 课程站加载完成后再访问 API，确保 API 域 route/JSESSIONID 已建立。
                 if (pageUrl != null) {
+                    if (!isExpectedHost(pageUrl, "mooc1.chaoxing.com")) return restartLoginAfterRedirect()
                     capturePhase = 3
                     lastNavTime = now
                     webView.loadUrl(SEED_URL_API)
@@ -174,18 +191,19 @@ class LoginActivity : AppCompatActivity() {
             3 -> {
                 // API 加载完成 → 收集所有域 Cookie 并保存账号
                 if (pageUrl != null) {
+                    if (!isExpectedHost(pageUrl, "mooc1-api.chaoxing.com")) return restartLoginAfterRedirect()
                     capturePhase = 4
-                    val cookie = collectCookie()
-                    // 安全红线：只记 Cookie 字段名（不记值），排查作业接口 400 是否因缺字段
-                    val keys = cookie.split(";").map { it.trim().substringBefore('=').trim() }
-                        .filter { it.isNotEmpty() }.distinct().sorted()
-                    DebugLog.log(this, "登录Cookie字段(${keys.size}): ${keys.joinToString(",")}")
-                    val uid = accountManager.addAccount(cookie)
+                    val cookiesByDomain = collectCookiesByDomain()
+                    // 安全红线：日志只记录会话同步完成，不记录 Cookie 字段名或任何值。
+                    DebugLog.log(this, "登录会话已同步")
+                    capturePhase = 4
+                    val uid = accountManager.addAccountByDomain(cookiesByDomain)
                     if (uid != null) {
                         mainHandler.removeCallbacks(checkLoginRunnable)
-                        goToMain(uid)
+                        syncDisplayNameFromAuthenticatedPage(uid) { goToMain(uid) }
                         return true
                     }
+                    return restartLoginAfterRedirect()
                 }
                 return false
             }
@@ -200,14 +218,57 @@ class LoginActivity : AppCompatActivity() {
         return v.isNotEmpty() && v != "0"
     }
 
-    private fun collectCookie(): String {
-        val sb = StringBuilder()
-        for (domain in COOKIE_DOMAINS) {
-            CookieManager.getInstance().getCookie(domain)?.let {
-                sb.append(it).append("; ")
+    private fun isExpectedHost(url: String, expected: String): Boolean =
+        runCatching { android.net.Uri.parse(url).host.equals(expected, ignoreCase = true) }.getOrDefault(false)
+
+    private fun restartLoginAfterRedirect(): Boolean {
+        capturePhase = 0
+        loginReady = false
+        mainHandler.removeCallbacks(checkLoginRunnable)
+        if (::tvAccountHint.isInitialized) {
+            tvAccountHint.text = "没有确认到完整的学习通登录会话，请重新登录后再试。"
+        }
+        CookieManager.getInstance().removeAllCookies {
+            runOnUiThread {
+                if (!isFinishing && ::webView.isInitialized) {
+                    loginReady = true
+                    webView.loadUrl(LOGIN_URL)
+                    mainHandler.post(checkLoginRunnable)
+                }
             }
         }
-        return sb.toString()
+        return false
+    }
+
+    private fun collectCookie(): String {
+        return collectCookiesByDomain().values.joinToString("; ")
+    }
+
+    private fun syncDisplayNameFromAuthenticatedPage(uid: String, onComplete: () -> Unit) {
+        if (!::webView.isInitialized) {
+            onComplete()
+            return
+        }
+        runCatching {
+            webView.evaluateJavascript("document.body ? document.body.innerText : ''") { encoded ->
+                val body = runCatching {
+                    org.json.JSONTokener(encoded).nextValue() as? String
+                }.getOrNull()
+                if (!body.isNullOrBlank()) {
+                    AccountNameParser.parse(body, uid)
+                        ?.let { AccountProfileStore(this).saveDisplayName(uid, it) }
+                }
+                onComplete()
+            }
+        }.onFailure { onComplete() }
+    }
+
+    private fun collectCookiesByDomain(): Map<String, String> = buildMap {
+        for (domain in COOKIE_DOMAINS) {
+            CookieManager.getInstance().getCookie(domain)?.takeIf { it.isNotBlank() }?.let {
+                put(domain, it)
+            }
+        }
     }
 
     private fun goToMain(selectedUid: String? = null) {

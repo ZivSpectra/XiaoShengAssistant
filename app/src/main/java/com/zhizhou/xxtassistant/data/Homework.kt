@@ -8,7 +8,7 @@ package com.zhizhou.xxtassistant.data
  *  - SUBMITTED 已提交待批阅（橙）
  *  - DONE      已完成/已批阅（绿）
  */
-data class Homework(
+data class Homework @JvmOverloads constructor(
     val id: String,                 // 作业唯一标识（学习通的 workId，手动作业为 manual_时间戳）
     val accountId: String,          // 所属学习通账号 uid（换号后用于恢复本地记录）
     val courseName: String,         // 课程名
@@ -19,7 +19,9 @@ data class Homework(
     val source: Int = AUTO,         // 来源：AUTO=学习通自动检测 / MANUAL=自己手动添加
     val courseKey: String = "",    // 课程稳定键：courseId+classId 或本地手动课程 ID
     val officialEndTime: Long? = null,
-    val deadlineOverridden: Boolean = false
+    val deadlineOverridden: Boolean = false,
+    /** True only when the official detail page explicitly supplied the deadline. */
+    val deadlineVerified: Boolean = false
 ) {
     companion object {
         const val PENDING = 0
@@ -39,6 +41,9 @@ data class Homework(
 
     /** 是否是手动添加的作业 */
     fun isManual(): Boolean = source == MANUAL
+
+    /** Stable token used by both AlarmManager and WorkManager receivers. */
+    fun reminderToken(minutes: Int): String = "$accountId:$courseKey:$id:$minutes"
 
     /** 状态文字（界面显示用） */
     fun statusText(): String = when (status) {

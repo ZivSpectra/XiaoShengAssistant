@@ -4,11 +4,55 @@
     <cloud-backup>
         <exclude domain="sharedpref" path="xxt_accounts.xml" />
         <exclude domain="sharedpref" path="xxt_session.xml" />
+        <exclude domain="sharedpref" path="xxt_cache.xml" />
+        <exclude domain="sharedpref" path="xxt_manual.xml" />
+        <exclude domain="sharedpref" path="xxt_deadline_overrides.xml" />
+        <exclude domain="sharedpref" path="xxt_hidden.xml" />
+        <exclude domain="sharedpref" path="xxt_local_completion.xml" />
+        <exclude domain="sharedpref" path="xxt_manual_deadline_prompts.xml" />
+        <exclude domain="sharedpref" path="xxt_unknown_deadline.xml" />
+        <exclude domain="sharedpref" path="xxt_remind.xml" />
+        <exclude domain="sharedpref" path="xxt_course_schedule.xml" />
+        <exclude domain="sharedpref" path="xxt_course_periods.xml" />
+        <exclude domain="sharedpref" path="xxt_course_table_settings.xml" />
+        <exclude domain="sharedpref" path="xxt_course_reminder.xml" />
+        <exclude domain="sharedpref" path="xxt_course_notifications.xml" />
+        <exclude domain="sharedpref" path="xxt_courses.xml" />
+        <exclude domain="sharedpref" path="xxt_pinned.xml" />
+        <exclude domain="sharedpref" path="xxt_pet_settings.xml" />
+        <exclude domain="sharedpref" path="xxt_work_cfg.xml" />
+        <exclude domain="sharedpref" path="xxt_view.xml" />
+        <exclude domain="sharedpref" path="xxt_reminder_onboarding.xml" />
         <exclude domain="root" path="app_webview" />
+        <exclude domain="database" path="androidx.work.workdb" />
+        <exclude domain="file" path="debug_log.txt" />
+        <exclude domain="file" path="debug_log.previous.txt" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="xxt_accounts.xml" />
         <exclude domain="sharedpref" path="xxt_session.xml" />
+        <exclude domain="sharedpref" path="xxt_cache.xml" />
+        <exclude domain="sharedpref" path="xxt_manual.xml" />
+        <exclude domain="sharedpref" path="xxt_deadline_overrides.xml" />
+        <exclude domain="sharedpref" path="xxt_hidden.xml" />
+        <exclude domain="sharedpref" path="xxt_local_completion.xml" />
+        <exclude domain="sharedpref" path="xxt_manual_deadline_prompts.xml" />
+        <exclude domain="sharedpref" path="xxt_unknown_deadline.xml" />
+        <exclude domain="sharedpref" path="xxt_remind.xml" />
+        <exclude domain="sharedpref" path="xxt_course_schedule.xml" />
+        <exclude domain="sharedpref" path="xxt_course_periods.xml" />
+        <exclude domain="sharedpref" path="xxt_course_table_settings.xml" />
+        <exclude domain="sharedpref" path="xxt_course_reminder.xml" />
+        <exclude domain="sharedpref" path="xxt_course_notifications.xml" />
+        <exclude domain="sharedpref" path="xxt_courses.xml" />
+        <exclude domain="sharedpref" path="xxt_pinned.xml" />
+        <exclude domain="sharedpref" path="xxt_pet_settings.xml" />
+        <exclude domain="sharedpref" path="xxt_work_cfg.xml" />
+        <exclude domain="sharedpref" path="xxt_view.xml" />
+        <exclude domain="sharedpref" path="xxt_reminder_onboarding.xml" />
         <exclude domain="root" path="app_webview" />
+        <exclude domain="database" path="androidx.work.workdb" />
+        <exclude domain="file" path="debug_log.txt" />
+        <exclude domain="file" path="debug_log.previous.txt" />
     </device-transfer>
 </data-extraction-rules>

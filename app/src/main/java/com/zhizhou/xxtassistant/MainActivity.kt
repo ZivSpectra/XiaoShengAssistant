@@ -10,8 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -19,7 +18,6 @@ import android.widget.LinearLayout
 import android.widget.NumberPicker
 import android.widget.RadioButton
 import android.widget.RadioGroup
-import android.widget.Spinner
 import android.widget.ScrollView
 import android.widget.TextView
 import android.text.InputType
@@ -38,8 +36,11 @@ import com.zhizhou.xxtassistant.data.CourseStore
 import com.zhizhou.xxtassistant.data.DeadlineOverrideStore
 import com.zhizhou.xxtassistant.data.HiddenStore
 import com.zhizhou.xxtassistant.data.Homework
+import com.zhizhou.xxtassistant.data.HomeworkStatsCalculator
+import com.zhizhou.xxtassistant.data.HomeworkScope
 import com.zhizhou.xxtassistant.data.HomeworkCache
 import com.zhizhou.xxtassistant.data.HomeworkCachePolicy
+import com.zhizhou.xxtassistant.data.HomeworkFailureClassifier
 import com.zhizhou.xxtassistant.data.ManualHomeworkStore
 import com.zhizhou.xxtassistant.data.ManualDeadlinePromptStore
 import com.zhizhou.xxtassistant.data.LocalCompletionStore
@@ -49,8 +50,14 @@ import com.zhizhou.xxtassistant.data.XueXiTongApi
 import com.zhizhou.xxtassistant.data.UnknownDeadlinePromptStore
 import com.zhizhou.xxtassistant.remind.ReminderScheduler
 import com.zhizhou.xxtassistant.remind.ReminderNotifier
+import com.zhizhou.xxtassistant.remind.CourseNotification
+import com.zhizhou.xxtassistant.remind.CourseReminderPolicy
+import com.zhizhou.xxtassistant.remind.ReminderDispatch
+import com.zhizhou.xxtassistant.remind.ReminderNotificationTarget
+import com.zhizhou.xxtassistant.remind.ReminderPermissionPolicy
+import com.zhizhou.xxtassistant.remind.ReminderPermissionState
+import com.zhizhou.xxtassistant.remind.ReminderPermissionStep
 import com.zhizhou.xxtassistant.util.DebugLog
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -61,7 +68,6 @@ import java.util.concurrent.atomic.AtomicInteger
  * 主页：当前账号作业列表（按截止时间从近到远排序）。
  *
  * 功能：
- *  - 顶部显示当前账号（换账号从设置退出登录后重新登录）
  *  - 刷新按钮：重新抓取当前账号的作业
  *  - 提醒设置：选择多个提前提醒节点（如截止前 1 天 / 3 小时 / 30 分钟）
  *  - 作业列表：未完成排前面（红），已完成排后面（绿）；点击跳转到学习通对应作业页
@@ -83,10 +89,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var manualDeadlinePrompts: ManualDeadlinePromptStore
 
     private val handler = Handler(Looper.getMainLooper())
-    private var uidList: List<String> = emptyList()
     private var currentUid: String? = null
     private var currentHomework: List<Homework> = emptyList()
-    private var accountsInitialized = false
+    private var accountUiInitialized = false
     private val loadGeneration = AtomicInteger(0)
     private var loadingUid: String? = null
     private var activeLoadThread: Thread? = null
@@ -96,14 +101,26 @@ class MainActivity : AppCompatActivity() {
     private var deadlinePromptDialog: AlertDialog? = null
     private var unknownPromptShowing = false
     private var unknownDeadlineDialog: AlertDialog? = null
+    private var manualExpiredDialog: AlertDialog? = null
     private var permissionOnboardingDialog: AlertDialog? = null
+    private var permissionReturnDialog: AlertDialog? = null
+    /** 防止启动系统设置页的瞬间 onResume 被误判成“已经返回”。 */
+    private var permissionSettingsOpenedAt = 0L
+    private var waitingForNotificationPermission = false
+    private var courseRemindersInitialized = false
+    /** Exact/inexact mode used by the last course-alarm rebuild. */
+    private var lastCourseAlarmExact: Boolean? = null
 
     companion object {
+        const val EXTRA_OPEN_SETTINGS = "open_settings"
         /** 仅用于记录缓存新鲜度；缓存存在时不会因为 onResume 自动请求。 */
         private const val CACHE_MAX_AGE_MS = 15L * 60L * 1000L
         /** 网络失败后的自动重试冷却；仅无缓存首次进入使用。 */
         private const val AUTO_FETCH_RETRY_COOLDOWN_MS = 5L * 60L * 1000L
         private const val DAY_MS = 24L * 60L * 60L * 1000L
+        private const val PENDING_PERMISSION_STEP = "pending_permission_step"
+        private const val PENDING_CONFIRM_ONLY = "pending_permission_confirm_only"
+        private const val PENDING_PERMISSION_TARGET = "pending_permission_target"
 
         fun formatTime(ts: Long): String =
             SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(ts)
@@ -125,6 +142,33 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "验证结果已同步，请点击“重新检查”核对作业。", Toast.LENGTH_LONG).show()
                     reloadVisibleHomework(uid)
                 }
+            }
+        }
+
+    /**
+     * Android 13+ 的通知权限是运行时授权。授权成功后继续打开通知频道设置，
+     * 让用户可以在同一次引导里勾选“锁屏通知”和“悬浮通知”。
+     */
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            waitingForNotificationPermission = false
+            if (granted) {
+                openNextNotificationChannel()
+            } else {
+                // 拒绝运行时通知权限应等同于选择“稍后设置”：不在每次
+                // onResume 反复弹窗骚扰用户；设置页仍保留手动开启入口。
+                val prefs = getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+                val pendingStep = prefs.getInt(PENDING_PERMISSION_STEP, -1)
+                val confirmOnly = prefs.getBoolean(PENDING_CONFIRM_ONLY, false)
+                prefs.edit()
+                    .remove(PENDING_PERMISSION_STEP)
+                    .remove(PENDING_CONFIRM_ONLY)
+                    .remove(PENDING_PERMISSION_TARGET)
+                    .apply {
+                        if (pendingStep == 0 && !confirmOnly) putInt("step", 1)
+                    }
+                    .apply()
+                Toast.makeText(this, "通知权限未开启，锁屏和悬浮提醒暂时无法显示", Toast.LENGTH_LONG).show()
             }
         }
 
@@ -161,9 +205,17 @@ class MainActivity : AppCompatActivity() {
         // 从登录页带回来的目标账号（onNewIntent 负责后续切换，这里负责首次创建进入）
         intent.getStringExtra("selectedUid")?.let { currentUid = it }
 
-        setupSpinner()
         setupList()
         setupButtons()
+        setupBottomNavigation()
+        if (intent.getBooleanExtra(EXTRA_OPEN_SETTINGS, false)) {
+            // Keep the legacy deep link compatible, but route it to the new
+            // standalone settings page instead of reviving the old dialog.
+            handler.post {
+                startActivity(Intent(this, MyActivity::class.java))
+                finish()
+            }
+        }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (::adapter.isInitialized && adapter.isSelectionMode()) {
@@ -180,13 +232,26 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         // 返回详情页/验证页绝不触发网络请求；重新检查必须由用户点击。
         reloadAccounts(allowAutoFetch = false)
-        // 从系统设置返回时，精确闹钟权限可能刚刚被授予；重新登记一次，
-        // 避免权限恢复前创建的回退任务继续生效。
-        if (currentUid != null && ReminderScheduler.isExactMode(this) &&
-            ReminderScheduler.canScheduleExact(this)) {
+        if (::adapter.isInitialized) applyViewSettings()
+        // 从系统设置返回时，精确闹钟权限可能刚刚被授予或撤回。课程闹钟和
+        // 作业闹钟必须一起重建，否则课程提醒会继续沿用旧的精确/非精确模式。
+        val courseAlarmExact = CourseReminderPolicy.exactAlarmsEffective(
+            ReminderScheduler.isExactMode(this),
+            ReminderScheduler.canScheduleExact(this)
+        )
+        if (currentUid != null &&
+            (!courseRemindersInitialized || CourseReminderPolicy.alarmModeChanged(lastCourseAlarmExact, courseAlarmExact))
+        ) {
+            ReminderDispatch.enqueueAllCourses(this)
+            courseRemindersInitialized = true
+            lastCourseAlarmExact = courseAlarmExact
             rescheduleCurrentAccount()
         }
-        handler.post { maybeGuideReminderPermissions() }
+        handler.post {
+            if (!waitingForNotificationPermission && !showPermissionReturnConfirmation()) {
+                maybeGuideReminderPermissions()
+            }
+        }
     }
 
 
@@ -195,7 +260,7 @@ class MainActivity : AppCompatActivity() {
         intent.getStringExtra("selectedUid")?.let {
             if (it != currentUid) resetAccountUiState()
             currentUid = it
-            accountsInitialized = false
+            accountUiInitialized = false
         }
     }
 
@@ -205,58 +270,28 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    // ---------- 账号下拉框 ----------
-
-    private fun setupSpinner() {
-        val spinner = findViewById<Spinner>(R.id.spinner_account)
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (uidList.isNotEmpty() && uidList[position] != currentUid) {
-                    currentUid = uidList[position]
-                    resetAccountUiState()
-                    loadHomework(currentUid!!)
-                }
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
-        }
-    }
-
     private fun reloadAccounts(allowAutoFetch: Boolean = true) {
-        val nextUids = accountManager.getActiveUid()?.let { listOf(it) } ?: emptyList()
-        val changed = uidList != nextUids
-        val previousUid = currentUid
-        uidList = nextUids
-        val spinner = findViewById<Spinner>(R.id.spinner_account)
-        if (uidList.isEmpty()) {
+        val activeUid = accountManager.getActiveUid()
+        if (activeUid == null) {
             startActivity(Intent(this, LoginActivity::class.java))
             finish()
             return
         }
-        val labels = uidList.map { "账号…${it.takeLast(4)}" }
-        if (changed || !accountsInitialized) {
-            spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply {
-                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            }
-        }
-        spinner.isEnabled = false
-        // 副标题：显示当前账号
-        val current = currentUid?.takeIf { it in uidList } ?: uidList.firstOrNull()
-        if (current != previousUid) resetAccountUiState()
-        currentUid = current
-        if (current != null) {
-            findViewById<TextView>(R.id.tv_main_subtitle).text = "当前账号 …${current.takeLast(4)}"
-        }
-        // 保持当前选中
-        val idx = uidList.indexOf(current)
-        if (idx >= 0 && (changed || !accountsInitialized)) {
-            spinner.setSelection(idx)
-            current?.let { loadHomework(it) }
-        } else if (allowAutoFetch && current != null && cache.load(current).isEmpty()) {
+        val changed = currentUid != activeUid
+        val needsInitialLoad = changed || !accountUiInitialized
+        if (changed) resetAccountUiState()
+        currentUid = activeUid
+
+        // The app intentionally keeps one active session. Account switching is
+        // done through Settings -> Logout, so no legacy account spinner is
+        // maintained or accidentally exposed.
+        if (needsInitialLoad) {
+            loadHomework(activeUid)
+        } else if (allowAutoFetch && cache.load(activeUid).isEmpty()) {
             // 只有没有缓存的首次进入允许自动抓取；缓存过期只等待用户手动重新检查。
-            loadHomework(current)
+            loadHomework(activeUid)
         }
-        accountsInitialized = true
+        accountUiInitialized = true
     }
 
     // ---------- 作业列表 ----------
@@ -390,11 +425,31 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_add_homework).setOnClickListener {
             showAddHomeworkDialog()
         }
-        findViewById<Button>(R.id.btn_remind_setting).setOnClickListener {
-            showRemindSettingDialog()
-        }
-        findViewById<android.widget.ImageButton>(R.id.btn_settings).setOnClickListener {
-            showSettingsDialog()
+    }
+
+    /** 方案 D 的作业入口；其他三个入口保持为独立页面，避免切换时重复抓取。 */
+    private fun setupBottomNavigation() {
+        val nav = findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(
+            R.id.main_bottom_navigation
+        ) ?: return
+        nav.selectedItemId = R.id.nav_homework
+        nav.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.nav_today -> {
+                    navigateToTab(TodayActivity::class.java)
+                    false
+                }
+                R.id.nav_schedule -> {
+                    navigateToTab(CourseTableActivity::class.java)
+                    false
+                }
+                R.id.nav_homework -> true
+                R.id.nav_mine -> {
+                    navigateToTab(MyActivity::class.java)
+                    false
+                }
+                else -> false
+            }
         }
     }
 
@@ -407,6 +462,7 @@ class MainActivity : AppCompatActivity() {
         val rbDouble = dialogView.findViewById<android.widget.RadioButton>(R.id.rb_layout_double)
         val btnExpandAll = dialogView.findViewById<Button>(R.id.btn_expand_all)
         val btnCollapseAll = dialogView.findViewById<Button>(R.id.btn_collapse_all)
+        var pendingGroupExpanded: Boolean? = null
         rgMode.check(if (viewSettings.mode == ViewSettings.MODE_GROUP) R.id.rb_mode_group else R.id.rb_mode_flat)
         rgLayout.check(if (viewSettings.layout == ViewSettings.LAYOUT_DOUBLE) R.id.rb_layout_double else R.id.rb_layout_single)
 
@@ -432,9 +488,11 @@ class MainActivity : AppCompatActivity() {
             showDebugLogDialog()
         }
         btnExpandAll.setOnClickListener {
+            pendingGroupExpanded = true
             adapter.setAllGroupsExpanded(true)
         }
         btnCollapseAll.setOnClickListener {
+            pendingGroupExpanded = false
             adapter.setAllGroupsExpanded(false)
         }
         dialogView.findViewById<Button>(R.id.btn_manage_courses).setOnClickListener {
@@ -442,13 +500,13 @@ class MainActivity : AppCompatActivity() {
         }
         dialogView.findViewById<TextView>(R.id.tv_permission_status).text = reminderSystemStatus()
         dialogView.findViewById<Button>(R.id.btn_notification_permission).setOnClickListener {
-            openNotificationSettings()
+            openNotificationSettings(requireReturnConfirmation = true)
         }
         dialogView.findViewById<Button>(R.id.btn_exact_alarm_permission).setOnClickListener {
-            openExactAlarmSettings()
+            openExactAlarmSettings(requireReturnConfirmation = true)
         }
         dialogView.findViewById<Button>(R.id.btn_battery_permission).setOnClickListener {
-            openBatterySettings()
+            openBatterySettings(requireReturnConfirmation = true)
         }
 
         val hiddenCount = currentUid?.let { hiddenStore.list(it).size } ?: 0
@@ -470,6 +528,9 @@ class MainActivity : AppCompatActivity() {
                 viewSettings.mode = mode
                 viewSettings.layout = layout
                 applyViewSettings()
+                pendingGroupExpanded?.let { expanded ->
+                    if (mode == ViewSettings.MODE_GROUP) adapter.setAllGroupsExpanded(expanded)
+                }
                 Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton("已隐藏作业（$hiddenCount）") { _, _ ->
@@ -495,49 +556,132 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 直接申请通知权限；权限已有但频道被静音时，进入具体频道页面。 */
-    private fun openNotificationSettings() {
+    /**
+     * 先申请 Android 13+ 通知权限，授权完成后自动进入具体通知频道页面。
+     * 频道页面中的“锁屏通知”和“悬浮通知”仍必须由用户手动勾选，应用不能代替系统修改。
+     */
+    private fun openNotificationSettings(requireReturnConfirmation: Boolean = false) {
+        permissionSettingsOpenedAt = System.currentTimeMillis()
+        if (requireReturnConfirmation) {
+            getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+                .edit().putInt(PENDING_PERMISSION_STEP, 0)
+                .putBoolean(PENDING_CONFIRM_ONLY, true)
+                .putString(PENDING_PERMISSION_TARGET, ReminderNotificationTarget.ALL_NOTIFICATIONS.name)
+                .apply()
+        }
         if (Build.VERSION.SDK_INT >= 33 &&
             androidx.core.content.ContextCompat.checkSelfPermission(
                 this,
                 "android.permission.POST_NOTIFICATIONS"
             ) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 100)
+            waitingForNotificationPermission = true
+            notificationPermissionLauncher.launch("android.permission.POST_NOTIFICATIONS")
             return
         }
-        runCatching {
-            startActivity(Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
-                putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
-                putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, ReminderNotifier.CHANNEL_ID)
-            })
-        }.onFailure {
-            runCatching {
-                startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
-                })
+        showNotificationChannelChooser()
+    }
+
+    /** 已获通知权限后，让用户选择需要调整的提醒频道。 */
+    private fun showNotificationChannelChooser() {
+        val homeworkReady = !ReminderNotifier.homeworkChannelNeedsUserAttention(this)
+        val courseReady = !CourseNotification.channelNeedsUserAttention(this)
+        AlertDialog.Builder(this)
+            .setTitle("选择通知类型")
+            .setItems(
+                arrayOf(
+                    if (homeworkReady) "作业截止提醒（已开启）" else "作业截止提醒（需检查）",
+                    if (courseReady) "课程提醒（已开启）" else "课程提醒（需检查）",
+                    "全部通知设置"
+                )
+            ) { _, which ->
+                when (which) {
+                    0 -> openNotificationChannelSettings(ReminderNotifier.CHANNEL_ID)
+                    1 -> openNotificationChannelSettings(CourseNotification.CHANNEL_ID)
+                    else -> openAppNotificationSettings()
+                }
             }
+            .setNegativeButton("取消") { _, _ ->
+                clearPendingPermissionStep()
+            }
+            .show()
+    }
+
+    /** 优先进入具体通知频道；不支持频道设置的系统回退到应用通知设置。 */
+    private fun openNotificationChannelSettings(channelId: String = ReminderNotifier.CHANNEL_ID) {
+        permissionSettingsOpenedAt = System.currentTimeMillis()
+        savePendingNotificationTarget(
+            if (channelId == CourseNotification.CHANNEL_ID) {
+                ReminderNotificationTarget.COURSE_CHANNEL
+            } else {
+                ReminderNotificationTarget.HOMEWORK_CHANNEL
+            }
+        )
+        val channelIntent = Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+            putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+            putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, channelId)
         }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startActivity(channelIntent)
+            else openAppNotificationSettings()
+        }.onFailure { openAppNotificationSettings() }
+    }
+
+    private fun openAppNotificationSettings() {
+        permissionSettingsOpenedAt = System.currentTimeMillis()
+        savePendingNotificationTarget(ReminderNotificationTarget.ALL_NOTIFICATIONS)
+        val appIntent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+        }
+        runCatching { startActivity(appIntent) }
+            .onFailure { clearPendingPermissionStep() }
+    }
+
+    private fun openNextNotificationChannel() {
+        val nextChannel = when {
+            ReminderNotifier.homeworkChannelNeedsUserAttention(this) -> ReminderNotifier.CHANNEL_ID
+            CourseNotification.channelNeedsUserAttention(this) -> CourseNotification.CHANNEL_ID
+            else -> null
+        }
+        if (nextChannel == null) openAppNotificationSettings()
+        else openNotificationChannelSettings(nextChannel)
     }
 
     /** 打开系统的精确闹钟授权页；低版本没有该权限模型。 */
-    private fun openExactAlarmSettings() {
+    private fun openExactAlarmSettings(requireReturnConfirmation: Boolean = false) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             Toast.makeText(this, "当前系统无需单独授权精确闹钟", Toast.LENGTH_SHORT).show()
             return
         }
+        if (requireReturnConfirmation) {
+            getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+                .edit().putInt(PENDING_PERMISSION_STEP, 1)
+                .putBoolean(PENDING_CONFIRM_ONLY, true)
+                .remove(PENDING_PERMISSION_TARGET)
+                .apply()
+        }
+        permissionSettingsOpenedAt = System.currentTimeMillis()
         runCatching {
             startActivity(Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                 data = android.net.Uri.parse("package:$packageName")
             })
         }.onFailure {
+            clearPendingPermissionStep()
             Toast.makeText(this, "系统未提供精确闹钟设置页面，请在应用权限中手动开启", Toast.LENGTH_LONG).show()
         }
     }
 
     /** 优先打开本应用的电池优化授权页，厂商不支持时回退到系统列表。 */
     @SuppressLint("BatteryLife")
-    private fun openBatterySettings() {
+    private fun openBatterySettings(requireReturnConfirmation: Boolean = false) {
+        if (requireReturnConfirmation) {
+            getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+                .edit().putInt(PENDING_PERMISSION_STEP, 2)
+                .putBoolean(PENDING_CONFIRM_ONLY, true)
+                .remove(PENDING_PERMISSION_TARGET)
+                .apply()
+        }
+        permissionSettingsOpenedAt = System.currentTimeMillis()
         runCatching {
             val power = getSystemService(android.os.PowerManager::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
@@ -551,17 +695,19 @@ class MainActivity : AppCompatActivity() {
         }.onFailure {
             runCatching {
                 startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            }
+            }.onFailure { clearPendingPermissionStep() }
         }
     }
 
     /**
-     * 首次进入时按顺序引导系统权限。每一步只记录一次，不会在每次启动时重复骚扰；
-     * 用户选择“稍后设置”后仍可从设置页的三个入口重新打开。
+     * 首次进入时按顺序引导系统权限。只有从系统页面返回并确认开关已生效后，
+     * 才会进入下一步；用户选择“稍后设置”后仍可从设置页重新打开。
      */
     private fun maybeGuideReminderPermissions() {
-        if (permissionOnboardingDialog != null || isFinishing || isDestroyed || currentUid == null) return
+        if (permissionOnboardingDialog != null || permissionReturnDialog != null ||
+            isFinishing || isDestroyed || currentUid == null) return
         val prefs = getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+        if (prefs.getBoolean("skip_permission_guide", false)) return
         var step = prefs.getInt("step", 0)
         if (step == 0 && ReminderNotifier.canNotify(this) &&
             !ReminderNotifier.channelNeedsUserAttention(this)) {
@@ -601,8 +747,26 @@ class MainActivity : AppCompatActivity() {
             .setTitle(title)
             .setMessage(message)
             .setPositiveButton(R.string.reminder_onboarding_open) { _, _ ->
-                prefs.edit().putInt("step", currentStep + 1).apply()
-                openAction()
+                // 先保存“等待返回确认”的步骤；只有用户从系统设置返回并明确确认后，
+                // 才推进 onboarding，避免离开页面前就误判权限已开启。
+                getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+                    .edit()
+                    .putInt(PENDING_PERMISSION_STEP, currentStep)
+                    .remove(PENDING_PERMISSION_TARGET)
+                    .apply()
+                if (currentStep == 0 && Build.VERSION.SDK_INT >= 33 &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        this,
+                        "android.permission.POST_NOTIFICATIONS"
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
+                    waitingForNotificationPermission = true
+                }
+                runCatching { openAction() }.onFailure {
+                    waitingForNotificationPermission = false
+                    clearPendingPermissionStep()
+                    Toast.makeText(this, "系统设置页面暂时无法打开，请稍后从设置中重试", Toast.LENGTH_LONG).show()
+                }
             }
             .setNegativeButton(R.string.reminder_onboarding_later) { _, _ ->
                 prefs.edit().putInt("step", currentStep + 1).apply()
@@ -614,6 +778,157 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
+    /**
+     * 系统设置页没有可靠的统一返回结果，利用 onResume 发现待确认步骤。
+     * 这里不猜测厂商的锁屏/悬浮开关，而是让用户明确确认后再推进流程。
+     */
+    private fun showPermissionReturnConfirmation(): Boolean {
+        if (permissionReturnDialog != null || isFinishing || isDestroyed || currentUid == null) return false
+        // Some ROMs deliver one immediate onResume while the settings page is
+        // still opening. It is not a real return from settings yet.
+        if (System.currentTimeMillis() - permissionSettingsOpenedAt < 700L) return false
+        val prefs = getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+        val pendingStep = prefs.getInt(PENDING_PERMISSION_STEP, -1)
+        val confirmOnly = prefs.getBoolean(PENDING_CONFIRM_ONLY, false)
+        if (pendingStep !in 0..2 && !confirmOnly) return false
+
+        val target = runCatching {
+            ReminderNotificationTarget.valueOf(
+                prefs.getString(PENDING_PERMISSION_TARGET, null)
+                    ?: ReminderNotificationTarget.ALL_NOTIFICATIONS.name
+            )
+        }.getOrDefault(ReminderNotificationTarget.ALL_NOTIFICATIONS)
+        val step = when (pendingStep) {
+            0 -> ReminderPermissionStep.NOTIFICATIONS
+            1 -> ReminderPermissionStep.EXACT_ALARMS
+            2 -> ReminderPermissionStep.BATTERY_OPTIMIZATION
+            else -> ReminderPermissionStep.NOTIFICATIONS
+        }
+        // 用户可能已经把开关全部打开。此时直接清理一次性确认状态，
+        // 不再弹“请确认系统设置”的重复对话框。
+        if (ReminderPermissionPolicy.isReady(step, permissionState(step, target), target)) {
+            clearPendingPermissionStep()
+            if (!confirmOnly && pendingStep in 0..2) {
+                prefs.edit().putInt("step", pendingStep + 1).apply()
+                handler.post { maybeGuideReminderPermissions() }
+            }
+            return false
+        }
+
+        val message = when (pendingStep) {
+            0 -> getString(R.string.reminder_onboarding_return_notification_message)
+            1 -> getString(R.string.reminder_onboarding_return_exact_message)
+            2 -> getString(R.string.reminder_onboarding_return_battery_message)
+            else -> getString(R.string.reminder_onboarding_return_notification_message)
+        }
+        var confirmed = false
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.reminder_onboarding_return_title)
+            .setMessage(message)
+            // The actual listener is installed after show() so an incomplete
+            // permission check can keep this confirmation dialog open.
+            .setPositiveButton(R.string.reminder_onboarding_confirm, null)
+            .setNegativeButton(R.string.reminder_onboarding_not_yet) { _, _ ->
+                confirmed = true
+                // “还没开启”继续打开当前设置页，避免清掉状态后后续步骤
+                // 没有入口。用户可以用系统返回键离开，再选择“稍后处理”。
+                handler.post {
+                    when (pendingStep) {
+                        0 -> openNotificationSettings(requireReturnConfirmation = confirmOnly)
+                        1 -> openExactAlarmSettings(requireReturnConfirmation = confirmOnly)
+                        2 -> openBatterySettings(requireReturnConfirmation = confirmOnly)
+                    }
+                }
+            }
+            .setNeutralButton("稍后处理") { _, _ ->
+                confirmed = true
+                clearPendingPermissionStep()
+                Toast.makeText(this, "可以稍后从设置中再次开启提醒权限", Toast.LENGTH_SHORT).show()
+            }
+            .create()
+        permissionReturnDialog = dialog
+        dialog.setOnDismissListener {
+            permissionReturnDialog = null
+            if (!confirmed) {
+                prefs.edit()
+                    .remove(PENDING_PERMISSION_STEP)
+                    .remove(PENDING_CONFIRM_ONLY)
+                    .remove(PENDING_PERMISSION_TARGET)
+                    .apply()
+            }
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val state = permissionState(step, target)
+                val ready = ReminderPermissionPolicy.isReady(step, state, target)
+                if (!ready) {
+                    Toast.makeText(this, "检测到该项还没有完全开启，请在系统页面确认后再继续", Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+                confirmed = true
+                val edit = prefs.edit()
+                    .remove(PENDING_PERMISSION_STEP)
+                    .remove(PENDING_CONFIRM_ONLY)
+                    .remove(PENDING_PERMISSION_TARGET)
+                if (pendingStep in 0..2 && !confirmOnly) edit.putInt("step", pendingStep + 1)
+                edit.apply()
+                if (!confirmOnly) handler.postDelayed({ maybeGuideReminderPermissions() }, 250L)
+            }
+        }
+        dialog.show()
+        return true
+    }
+
+    private fun permissionState(
+        step: ReminderPermissionStep,
+        target: ReminderNotificationTarget
+    ): ReminderPermissionState = when (step) {
+        ReminderPermissionStep.NOTIFICATIONS -> ReminderPermissionState(
+            notificationsAllowed = ReminderNotifier.canNotify(this),
+            // The channel opened for this confirmation is checked directly;
+            // the other channel is included only when the user asked to
+            // verify all notification channels.
+            homeworkChannelNeedsAttention = target != ReminderNotificationTarget.COURSE_CHANNEL &&
+                ReminderNotifier.homeworkChannelNeedsUserAttention(this),
+            courseChannelNeedsAttention = target != ReminderNotificationTarget.HOMEWORK_CHANNEL &&
+                CourseNotification.channelNeedsUserAttention(this),
+            exactAlarmsAllowed = false,
+            batteryOptimizationIgnored = false
+        )
+        ReminderPermissionStep.EXACT_ALARMS -> ReminderPermissionState(
+            notificationsAllowed = false,
+            homeworkChannelNeedsAttention = false,
+            courseChannelNeedsAttention = false,
+            exactAlarmsAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                ReminderScheduler.canScheduleExact(this),
+            batteryOptimizationIgnored = false
+        )
+        ReminderPermissionStep.BATTERY_OPTIMIZATION -> ReminderPermissionState(
+            notificationsAllowed = false,
+            homeworkChannelNeedsAttention = false,
+            courseChannelNeedsAttention = false,
+            exactAlarmsAllowed = false,
+            batteryOptimizationIgnored = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                isIgnoringBatteryOptimizations()
+        )
+    }
+
+    private fun clearPendingPermissionStep() {
+        getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+            .edit()
+            .remove(PENDING_PERMISSION_STEP)
+            .remove(PENDING_CONFIRM_ONLY)
+            .remove(PENDING_PERMISSION_TARGET)
+            .apply()
+    }
+
+    private fun savePendingNotificationTarget(target: ReminderNotificationTarget) {
+        val prefs = getSharedPreferences("xxt_reminder_onboarding", MODE_PRIVATE)
+        if (prefs.contains(PENDING_PERMISSION_STEP)) {
+            prefs.edit().putString(PENDING_PERMISSION_TARGET, target.name).apply()
+        }
+    }
+
     private fun isIgnoringBatteryOptimizations(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         val power = getSystemService(android.os.PowerManager::class.java)
@@ -622,9 +937,12 @@ class MainActivity : AppCompatActivity() {
 
     /** 退出登录的实际执行部分，供用户主动退出和会话过期提示共用。 */
     private fun performLogout() {
-        currentUid?.let { ReminderScheduler.pauseAccount(this, it) }
+        val logoutAccountId = currentUid
         cancelActiveLoad()
         accountManager.logout()
+        // Invalidate queued rebuilds only after the active session is cleared,
+        // then cancel behind any rebuild already holding the scheduler lock.
+        ReminderDispatch.invalidateAndCancel(this, logoutAccountId)
         android.webkit.CookieManager.getInstance().removeAllCookies {
             android.webkit.CookieManager.getInstance().flush()
             runOnUiThread {
@@ -648,8 +966,8 @@ class MainActivity : AppCompatActivity() {
             .setTitle("学习通需要验证码验证")
             .setMessage(
                 "学习通暂时要求完成图片验证码，这不一定代表登录失效。\n\n" +
-                "请在小笙内打开刚才被拦截的学习通页面并亲自完成验证。验证完成后返回主页，小笙会自动重新检查一次。" +
-                    "小笙不会自动填写验证码，也不会在返回页面时重复请求。"
+                "请在小笙内打开刚才被拦截的学习通页面并亲自完成验证。验证完成后返回主页，" +
+                    "小笙只会同步当前会话，不会自动重复请求；请确认页面提示后手动点击一次“重新检查”。"
             )
             .setPositiveButton("打开验证页面") { _, _ ->
                 val uid = currentUid ?: return@setPositiveButton
@@ -671,7 +989,8 @@ class MainActivity : AppCompatActivity() {
         val start = viewSettings.filterStartDay
         val end = viewSettings.filterEndDay
         findViewById<Button>(R.id.btn_date_filter)?.text =
-            "时间范围：${formatDate(start)} - ${formatDate(end)}"
+            "时间范围：${formatDate(start)} - ${formatDate(end)}" +
+                if (viewSettings.filterRangeCustomized) "" else "（含欠账）"
     }
 
     private fun showDateFilterDialog() {
@@ -734,6 +1053,7 @@ class MainActivity : AppCompatActivity() {
         viewSettings.filterAll = false
         viewSettings.filterStartDay = start
         viewSettings.filterEndDay = end
+        viewSettings.filterRangeCustomized = true
         updateFilterButton()
         currentUid?.let { reloadVisibleHomework(it) }
     }
@@ -746,11 +1066,9 @@ class MainActivity : AppCompatActivity() {
 
     /** 联调日志：读取本地抓取日志，方便排查"抓不到作业"这类真机问题 */
     private fun showDebugLogDialog() {
-        val content = try {
-            File(filesDir, "debug_log.txt").readText()
-        } catch (_: Exception) { "" }
+        val content = DebugLog.read(this)
         if (content.isBlank()) {
-            Toast.makeText(this, "暂无日志（先点一次「刷新作业」再回来看）", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "暂无日志（先点一次「重新检查」再回来看）", Toast.LENGTH_SHORT).show()
             return
         }
         val tv = TextView(this).apply {
@@ -857,7 +1175,8 @@ class MainActivity : AppCompatActivity() {
                 val cb = CheckBox(this).apply {
                     visibility = if (cbBatch.isChecked) View.VISIBLE else View.GONE
                     setOnCheckedChangeListener { _, isChecked ->
-                        if (isChecked) selected.add(item.id) else selected.remove(item.id)
+                        val key = hiddenStore.selectionKey(item)
+                        if (isChecked) selected.add(key) else selected.remove(key)
                         btnRestore.text = "恢复所选（${selected.size}）"
                     }
                 }
@@ -890,7 +1209,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "请先勾选要恢复的作业", Toast.LENGTH_SHORT).show()
             } else {
                 // 手动作业先写回手动列表，再统一移除隐藏记录
-                items.filter { it.id in selected }.forEach { restoreHiddenItem(uid, it) }
+                items.filter { hiddenStore.selectionKey(it) in selected }.forEach { restoreHiddenItem(uid, it) }
                 Toast.makeText(this, "已恢复 ${selected.size} 条作业", Toast.LENGTH_SHORT).show()
                 loadHomework(uid)
                 dialog?.dismiss()
@@ -937,6 +1256,8 @@ class MainActivity : AppCompatActivity() {
     /** 账号切换时丢弃旧账号的展开状态和截止时间提示，避免跨账号串界面。 */
     private fun resetAccountUiState() {
         if (::adapter.isInitialized) adapter.resetAccountState()
+        courseRemindersInitialized = false
+        lastCourseAlarmExact = null
         deadlinePromptQueue.clear()
         deadlinePromptDialog?.dismiss()
         unknownDeadlineDialog?.dismiss()
@@ -945,11 +1266,20 @@ class MainActivity : AppCompatActivity() {
 
     /** 抓取当前账号的作业（学习通自动检测 + 本地手动作业），后台线程不卡界面 */
     private fun loadHomework(uid: String, force: Boolean = false) {
-        val cookie = accountManager.getAccounts()[uid] ?: return
+        val fetchTraceId = java.util.UUID.randomUUID().toString().take(8)
+        val cookie = accountManager.getAccounts()[uid]
+        if (cookie.isNullOrBlank()) {
+            DebugLog.log(this, "[HOMEWORK_FETCH][$fetchTraceId] skipped reason=no_session_cookie")
+            return
+        }
 
         // 同一账号只能有一个任务；切换账号时立即中断旧任务。
         if (activeLoadThread?.isAlive == true) {
-            if (loadingUid == uid) return
+            if (loadingUid == uid) {
+                DebugLog.log(this, "[HOMEWORK_FETCH][$fetchTraceId] skipped reason=already_running")
+                return
+            }
+            DebugLog.log(this, "[HOMEWORK_FETCH][$fetchTraceId] previous-account-fetch=cancelled")
             cancelActiveLoad()
         }
 
@@ -968,14 +1298,19 @@ class MainActivity : AppCompatActivity() {
 
         // 无缓存时首次抓取；之后仅手动刷新或缓存过期才访问网络。
         val firstEntryWithoutCache = enteredUids.add(uid) && cached.isEmpty()
-        val wantsAutoFetch = firstEntryWithoutCache || cache.isStale(uid, CACHE_MAX_AGE_MS)
+        val cacheStale = cache.isStale(uid, CACHE_MAX_AGE_MS)
+        val wantsAutoFetch = firstEntryWithoutCache || cacheStale
+        val coolingDown = cache.isFetchAttemptCoolingDown(uid, AUTO_FETCH_RETRY_COOLDOWN_MS)
         // 首次进入无缓存，或缓存确实过期时才自动请求；其余情况只由用户
         // 点击“重新检查”触发，避免返回页面/切换窗口反复刷新。
-        val shouldFetch = force || (
-            wantsAutoFetch &&
-                !cache.isFetchAttemptCoolingDown(uid, AUTO_FETCH_RETRY_COOLDOWN_MS)
+        val shouldFetch = force || (wantsAutoFetch && !coolingDown)
+        DebugLog.log(
+            this,
+            "[HOMEWORK_FETCH][$fetchTraceId] decision force=$force firstEntry=$firstEntryWithoutCache cached=${cached.size} manual=${manual.size} cacheStale=$cacheStale cooldown=$coolingDown willFetch=$shouldFetch"
         )
         if (!shouldFetch) {
+            val reason = if (wantsAutoFetch && coolingDown) "retry_cooldown" else "cache_fresh"
+            DebugLog.log(this, "[HOMEWORK_FETCH][$fetchTraceId] skipped reason=$reason")
             hideFetchProgress()
             setRefreshEnabled(true)
             rescheduleCurrentAccount()
@@ -997,12 +1332,15 @@ class MainActivity : AppCompatActivity() {
         val detailFixed = AtomicInteger(0)
         val detailTotal = AtomicInteger(0)
         val fetchedCourseKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val confirmedRemovedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val worker = Thread {
             try {
                 // 抓取完整自动作业；隐藏和时间筛选只在本地展示/提醒层处理。
                 val auto = api.fetchAll(
                     cookie, uid,
+                    cachedHomeworks = cache.load(uid),
                     inspectDetails = force,
+                    diagnosticId = fetchTraceId,
                     onProgress = { done, total, name, ok ->
                         if (!ok) hadFailure.set(true)
                         runOnUiThread {
@@ -1022,33 +1360,48 @@ class MainActivity : AppCompatActivity() {
                         }
                     },
                     onCourse = { course, hws, ok ->
-                        // 先在线程回调入口记录成功课程，避免缓存保存先于主线程 UI 回调执行。
-                        if (ok) fetchedCourseKeys.add(course.key)
-                        // ② 边抓边显示：抓完一门课，立刻把这门课的作业刷上界面
+                        if (!ok) return@fetchAll
+                        // 课程和作业缓存都是 JSON/SharedPreferences I/O。它们必须在抓取线程
+                        // 完成，主线程只负责把已经合并好的结果展示出来；课程较多时不会因为
+                        // 边抓边写缓存而卡住滚动和按钮。
+                        fetchedCourseKeys.add(course.key)
+                        courseStore.upsertAutomatic(
+                            uid,
+                            CourseStore.CourseItem(
+                                key = course.key,
+                                accountId = uid,
+                                name = course.name.ifBlank { "未命名课程" },
+                                className = course.className,
+                                term = course.term,
+                                courseId = course.courseId,
+                                classId = course.classId,
+                                cpi = course.cpi,
+                                manual = false
+                            )
+                        )
+                        // 增量写入让用户在抓取中途退出应用时也能保留已完成课程；
+                        // HomeworkCache 的实例级锁会与最终快照写串行化，避免整段 JSON 互相覆盖。
+                        val mergedHomeworks = hws.map { cache.upsert(uid, it) }
+                        // ② 边抓边显示：抓完一门课，立刻把这门课的作业刷上界面。
                         runOnUiThread {
-                            if (generation == loadGeneration.get() && currentUid == uid && ok) {
-                                // 先把本次抓取的官方原始值写入缓存，截止时间恢复提示可以立即读到最新值。
-                                // 空解析不能覆盖旧数据：验证码、空页面或改版时保留上一份有效缓存。
-                                val mergedHomeworks = hws.map { cache.upsert(uid, it) }
-                                courseStore.upsertAutomatic(
-                                    uid,
-                                    CourseStore.CourseItem(
-                                        key = course.key,
-                                        accountId = uid,
-                                        name = course.name.ifBlank { "未命名课程" },
-                                        className = course.className,
-                                        term = course.term,
-                                        courseId = course.courseId,
-                                        classId = course.classId,
-                                        cpi = course.cpi,
-                                        manual = false
-                                    )
-                                )
+                            if (generation == loadGeneration.get() && currentUid == uid) {
                                 mergeCourse(course, mergedHomeworks)
+                            }
+                        }
+                    },
+                    onHomeworkRemoved = { homework ->
+                        confirmedRemovedKeys.add(HomeworkCachePolicy.keyOf(homework))
+                        cache.remove(uid, homework)
+                        runOnUiThread {
+                            if (generation == loadGeneration.get() && currentUid == uid) {
+                                currentHomework = currentHomework.filterNot { homeworkKey(it) == homeworkKey(homework) }
+                                adapter.submit(currentHomework)
+                                updateStats(currentHomework)
                             }
                         }
                     }
                 )
+                DebugLog.log(this@MainActivity, "[HOMEWORK_FETCH][$fetchTraceId] UI received automaticItems=${auto.size} partialFailure=${hadFailure.get()}")
                 // ③ 全部抓完：自动作业写入本地缓存（下次进应用秒显示）
                 if (generation == loadGeneration.get() && currentUid == uid) {
                     // 解析为空时保留该课程旧缓存，避免验证码/空页面把作业从列表抹掉。
@@ -1056,12 +1409,18 @@ class MainActivity : AppCompatActivity() {
                     // 失败课程不进入 fetchedCourseKeys 的有效保存路径，仍由 preserved 保留旧数据。
                     // 缓存保存完整抓取结果，时间筛选只影响界面，切换区间不能丢历史数据。
                     // 列表暂时漏项不能删除缓存作业；只有明确的用户操作才能移除。
-                    cache.save(uid, HomeworkCachePolicy.mergeSnapshot(cache.load(uid), auto))
+                    val existingForMerge = cache.load(uid)
+                    cache.save(
+                        uid,
+                        HomeworkCachePolicy.mergeSnapshot(existingForMerge, auto, confirmedRemovedKeys)
+                    )
                     if (!hadFailure.get()) {
                         courseStore.removeStaleAutomatic(uid, fetchedCourseKeys)
                     }
                     if (hadFailure.get()) {
-                        DebugLog.log(this@MainActivity, "部分课程抓取失败：已保存成功课程，保留失败课程旧缓存")
+                        DebugLog.log(this@MainActivity, "[HOMEWORK_FETCH][$fetchTraceId] cache-merge=partial fetchedCourses=${fetchedCourseKeys.size} retainedOldData=true")
+                    } else {
+                        DebugLog.log(this@MainActivity, "[HOMEWORK_FETCH][$fetchTraceId] cache-merge=complete fetchedCourses=${fetchedCourseKeys.size} automaticItems=${auto.size}")
                     }
                 }
                 val (msg, idx) = if (hadFailure.get()) {
@@ -1075,6 +1434,10 @@ class MainActivity : AppCompatActivity() {
                     finishMsg = "截止时间核对完成：已逐条查看 ${detailChecked.get()} 条，得到可靠时间 ${detailFixed.get()} 条，仍需人工确认 ${detailChecked.get() - detailFixed.get()} 条。"
                 }
             } catch (e: Exception) {
+                DebugLog.log(
+                    this@MainActivity,
+                    "[HOMEWORK_FETCH][$fetchTraceId] UI failure category=${HomeworkFailureClassifier.classify(e)} type=${e.javaClass.simpleName}"
+                )
                 handler.post {
                     if (generation != loadGeneration.get() || currentUid != uid) return@post
                     if (e is XueXiTongApi.AntiSpiderException) {
@@ -1085,7 +1448,10 @@ class MainActivity : AppCompatActivity() {
                         val (msg, _) = pickRandom(errorMsgs, lastErrorIdx)
                         Toast.makeText(
                             this,
-                            fillTemplate(msg, 0, 0, "", e.message ?: "未知错误"),
+                            // Exception messages can contain a request URL with
+                            // cpi/enc/session parameters. Keep that detail in
+                            // the local redacted diagnostic path only.
+                            fillTemplate(msg, 0, 0, "", "作业检查未完成，具体阶段和原因已写入诊断日志"),
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -1099,10 +1465,14 @@ class MainActivity : AppCompatActivity() {
                     loadingUid = null
                     activeLoadThread = null
                     setRefreshEnabled(true)
+                    // 增量合并只负责让抓取过程可见；最终界面必须从完整缓存按
+                    // 当前时间范围、隐藏和完成状态统一重建，不能让刷新路径绕过筛选。
+                    reloadVisibleHomework(uid)
                     showUnknownDeadlinePromptIfNeeded()
                     showManualExpiredPromptIfNeeded()
                     // 抓取完成：重新安排提醒 + 定格显示完成状态卡 1 秒再隐藏
                     rescheduleCurrentAccount()
+                    logHomeworkDisplayDiagnostics(uid, fetchTraceId)
                     showFetchDone(finishMsg)
                     handler.postDelayed({ hideFetchProgress() }, 1000L)
                 }
@@ -1110,6 +1480,20 @@ class MainActivity : AppCompatActivity() {
         }
         activeLoadThread = worker
         worker.start()
+    }
+
+    private fun logHomeworkDisplayDiagnostics(uid: String, traceId: String) {
+        val cached = cache.load(uid)
+        val manual = ManualHomeworkStore(this).list(uid)
+        val all = cached + manual
+        val scoped = all.map(deadlineOverrides::apply).map(::applyLocalCompletion)
+            .filter(::isInCurrentScope)
+        val hidden = scoped.count { hiddenStore.isHidden(uid, it, currentScopeKey()) }
+        val completedUnknown = scoped.count(::isCompletedWithUnknownDeadline)
+        DebugLog.log(
+            this,
+            "[HOMEWORK_FETCH][$traceId] display cache=${cached.size} manual=${manual.size} inScope=${scoped.size} hidden=$hidden completedUnknown=$completedUnknown visible=${currentHomework.size}"
+        )
     }
 
     /** 增量合并：把刚抓完的一门课作业合进列表（去重、过滤隐藏、保留手动作业），立即刷新界面 */
@@ -1145,7 +1529,14 @@ class MainActivity : AppCompatActivity() {
         if (viewSettings.filterAll) return true
         val start = viewSettings.filterStartDay
         val end = ViewSettings.endOfDay(viewSettings.filterEndDay)
-        return com.zhizhou.xxtassistant.data.HomeworkScope.contains(hw, false, start, end)
+        return HomeworkScope.contains(
+            homework = hw,
+            filterAll = false,
+            startDay = start,
+            endDay = end,
+            includeMissed = !viewSettings.filterRangeCustomized,
+            now = System.currentTimeMillis()
+        )
     }
 
     private fun isCompletedWithUnknownDeadline(hw: Homework): Boolean =
@@ -1156,8 +1547,12 @@ class MainActivity : AppCompatActivity() {
             hw.copy(status = Homework.DONE)
         } else hw
 
-    private fun currentScopeKey(): String =
-        if (viewSettings.filterAll) "all" else "${viewSettings.filterStartDay}:${viewSettings.filterEndDay}"
+    private fun currentScopeKey(): String = HomeworkScope.scopeKey(
+        filterAll = viewSettings.filterAll,
+        customized = viewSettings.filterRangeCustomized,
+        startDay = viewSettings.filterStartDay,
+        endDay = viewSettings.filterEndDay
+    )
 
     private fun homeworkKey(homework: Homework): String =
         "${homework.accountId}:${homework.courseKey}:${homework.id}"
@@ -1165,12 +1560,16 @@ class MainActivity : AppCompatActivity() {
     /** 提醒不受日期筛选影响，只排除当前隐藏的作业。 */
     private fun rescheduleCurrentAccount() {
         val uid = currentUid ?: return
-        val all = (cache.load(uid) + ManualHomeworkStore(this).list(uid))
-            .map(deadlineOverrides::apply)
-            .map(::applyLocalCompletion)
-            .filterNot { hiddenStore.isHidden(uid, it, currentScopeKey()) }
-            .distinctBy(::homeworkKey)
-        ReminderScheduler.reschedule(this, all)
+        ReminderDispatch.enqueueHomework(this, uid) {
+            // Resolve the complete snapshot on the worker. The active-account
+            // check in ReminderDispatch prevents a stale account from
+            // rebuilding the current account's alarms after logout/switch.
+            (cache.load(uid) + ManualHomeworkStore(applicationContext).list(uid))
+                .map(deadlineOverrides::apply)
+                .map(::applyLocalCompletion)
+                .filterNot { hiddenStore.isPermanentlyHidden(uid, it) }
+                .distinctBy(::homeworkKey)
+        }
     }
 
     /** 抓取完成后的定格卡（满格进度 + 小笙收工语），保证进度条不会一闪而过 */
@@ -1305,12 +1704,10 @@ class MainActivity : AppCompatActivity() {
 
     /** 更新顶部统计卡片（未完成 / 已完成）与空状态提示 */
     private fun updateStats(list: List<Homework>) {
-        val unfinished = list.count { it.isUnfinished() }
-        val done = list.count { !it.isUnfinished() && !it.isMissed() }
-        val missed = list.count { it.isMissed() }
-        findViewById<TextView>(R.id.tv_stat_unfinished).text = unfinished.toString()
-        findViewById<TextView>(R.id.tv_stat_done).text = done.toString()
-        findViewById<TextView>(R.id.tv_stat_missed).text = missed.toString()
+        val stats = HomeworkStatsCalculator.calculate(list)
+        findViewById<TextView>(R.id.tv_stat_unfinished).text = stats.unfinished.toString()
+        findViewById<TextView>(R.id.tv_stat_done).text = stats.done.toString()
+        findViewById<TextView>(R.id.tv_stat_missed).text = stats.missed.toString()
         findViewById<TextView>(R.id.tv_empty).visibility =
             if (list.isEmpty()) View.VISIBLE else View.GONE
     }
@@ -1376,10 +1773,9 @@ class MainActivity : AppCompatActivity() {
             .filterNot { hiddenStore.isHidden(uid, it, currentScopeKey()) }
         val unknown = promptSource.filter {
             it.accountId == uid && !it.isManual() &&
-                it.status == Homework.PENDING && it.endTime <= 0L
+                it.status != Homework.DONE && it.endTime <= 0L
         }
         if (unknown.isEmpty() || !unknownDeadlinePrompts.shouldPrompt(uid)) return
-        unknownDeadlinePrompts.snooze(uid)
         unknownPromptShowing = true
         val grouped = unknown.groupBy { it.courseName }
         val content = LinearLayout(this).apply {
@@ -1431,6 +1827,9 @@ class MainActivity : AppCompatActivity() {
             .show()
         unknownDeadlineDialog = dialog
         dialog.setCanceledOnTouchOutside(false)
+        // 只有对话框确实创建并显示后才开始 24 小时冷却，避免 Activity 在显示前
+        // 被系统回收时把用户的一次提醒机会白白消耗掉。
+        unknownDeadlinePrompts.snooze(uid)
     }
 
     private fun showDeadlineDatePickerWithContext(homework: Homework) {
@@ -1445,6 +1844,10 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("选择时间") { _, _ ->
                 showDateTimePicker(initial = null) { selected ->
                     deadlineOverrides.setOverride(homework, selected)
+                    // The aggregate unknown-deadline dialog contains a stale
+                    // row after this item is fixed. Close it so the user does
+                    // not keep seeing a prompt for a deadline that is known.
+                    unknownDeadlineDialog?.dismiss()
                     reloadVisibleHomework(homework.accountId)
                     Toast.makeText(this, "已设置截止时间", Toast.LENGTH_SHORT).show()
                 }
@@ -1453,29 +1856,74 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 手动作业过期后只询问一次，避免每次进入应用都重复打扰。 */
+    /** 手动作业过期后一次列出全部待处理项，并排除用户主动隐藏的条目。 */
     private fun showManualExpiredPromptIfNeeded() {
         val uid = currentUid ?: return
         if (isFinishing || isDestroyed || deadlinePromptShowing || unknownPromptShowing) return
+        // A row action refreshes the list while this dialog remains open. Do
+        // not stack a second copy over the dialog the user is handling.
+        if (manualExpiredDialog?.isShowing == true) return
         val expired = ManualHomeworkStore(this).list(uid)
             .map(deadlineOverrides::apply)
             .filter { it.status == Homework.PENDING && it.endTime > 0L && it.endTime < System.currentTimeMillis() }
-            .firstOrNull { !manualDeadlinePrompts.wasPrompted(uid, it.id, it.endTime) }
-            ?: return
-        manualDeadlinePrompts.markPrompted(uid, expired.id, expired.endTime)
-        AlertDialog.Builder(this)
-            .setTitle("这项手动作业已经截止")
-            .setMessage(
-                "${expired.courseName}\n${expired.title}\n\n" +
-                    "不好意思，我的过失让您受累了：这项手动作业的截止时间已经过去。" +
-                    "如果您已经完成，请在小笙里标记完成；如果还没有完成，也可以稍后继续处理。"
-            )
-            .setPositiveButton("已完成") { _, _ ->
-                ManualHomeworkStore(this).setCompleted(uid, expired.id, true)
-                reloadVisibleHomework(uid)
+            .filterNot { hiddenStore.isHidden(uid, it, currentScopeKey()) }
+            .filterNot { manualDeadlinePrompts.wasPrompted(uid, it.id, it.endTime) }
+        if (expired.isEmpty()) return
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(4), dp(24), dp(4))
+        }
+        content.addView(TextView(this).apply {
+            text = "共 ${expired.size} 项手动作业已超过截止时间。请确认完成状态，小笙不会替你向学习通提交。"
+            setTextColor(getColorCompat(R.color.text_secondary))
+            textSize = 14f
+            setPadding(0, 0, 0, dp(8))
+        })
+        val pendingAfterActions = expired.associateBy { it.id }.toMutableMap()
+        expired.forEach { homework ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, dp(4), 0, dp(4))
             }
-            .setNegativeButton("还没完成", null)
+            row.addView(TextView(this).apply {
+                text = "${homework.courseName}\n${homework.title}"
+                setTextColor(getColorCompat(R.color.text_primary))
+                textSize = 13f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            row.addView(Button(this).apply {
+                text = "已完成"
+                minWidth = 0
+                setPadding(dp(10), 0, dp(10), 0)
+                setOnClickListener {
+                    pendingAfterActions.remove(homework.id)
+                    ManualHomeworkStore(this@MainActivity).setCompleted(uid, homework.id, true)
+                    manualDeadlinePrompts.clear(uid, homework.id)
+                    row.visibility = View.GONE
+                    reloadVisibleHomework(uid)
+                    Toast.makeText(this@MainActivity, "已标记：${homework.title}", Toast.LENGTH_SHORT).show()
+                }
+            })
+            content.addView(row)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("这项手动作业已经截止")
+            .setView(ScrollView(this).apply { addView(content) })
+            .setNegativeButton("稍后处理", null)
             .show()
+        manualExpiredDialog = dialog
+        // A dismissal (including the explicit “稍后处理” action or Back) is
+        // the user's request to be reminded tomorrow. Items marked complete
+        // were removed from this set by their row action and are not snoozed.
+        dialog.setOnDismissListener {
+            pendingAfterActions.values.forEach { homework ->
+                manualDeadlinePrompts.snooze(uid, homework.id, homework.endTime)
+            }
+            manualExpiredDialog = null
+        }
+        dialog.setCanceledOnTouchOutside(false)
     }
 
     private fun reloadVisibleHomework(uid: String) {
@@ -1619,6 +2067,8 @@ class MainActivity : AppCompatActivity() {
     ) {
         var recentFirst = viewSettings.courseSortRecent
         val dialog = AlertDialog.Builder(this).setTitle("选择课程").create()
+        val pickerHeight = (resources.displayMetrics.heightPixels /
+            resources.displayMetrics.density * 0.56f).toInt().coerceIn(dp(250), dp(500))
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(12), dp(4), dp(8), dp(4))
@@ -1693,38 +2143,92 @@ class MainActivity : AppCompatActivity() {
                 })
             }
             scroll.addView(content)
-            listColumn.addView(scroll, LinearLayout.LayoutParams(0, dp(360), 1f))
-            root.addView(listColumn, LinearLayout.LayoutParams(0, dp(420), 1f))
+            listColumn.addView(scroll, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            ))
+            root.addView(listColumn, LinearLayout.LayoutParams(0, pickerHeight, 1f))
 
             if (!recentFirst) {
                 val rail = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = android.view.Gravity.CENTER
-                    setPadding(dp(3), dp(24), 0, 0)
+                    setPadding(dp(2), 0, 0, 0)
                 }
                 val letters = listOf("#") + ('A'..'Z').map { it.toString() }
                 letters.forEach { letter ->
+                    var touchStartIndex = -1
+                    var dragged = false
+                    val jumpToLetter: (String) -> Unit = { targetLetter ->
+                        anchors[targetLetter]?.let { target ->
+                            scroll.post { scroll.smoothScrollTo(0, target.top) }
+                        }
+                    }
                     rail.addView(TextView(this).apply {
                         text = letter
                         gravity = android.view.Gravity.CENTER
                         textSize = 10f
-                        minWidth = dp(22)
+                        minWidth = dp(32)
+                        contentDescription = "跳转到 $letter 开头的课程"
                         layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT, dp(14)
+                            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
                         )
                         val target = anchors[letter]
                         alpha = if (target == null) 0.35f else 1f
-                        isEnabled = target != null
-                        setOnClickListener {
-                            target?.let { view -> scroll.post { scroll.smoothScrollTo(0, view.top) } }
+                        isEnabled = true
+                        isClickable = target != null
+                        setOnClickListener { jumpToLetter(letter) }
+                        setOnTouchListener { view, event ->
+                            fun indexAtTouch(): Int {
+                                val yInRail = (view.top + event.y).coerceIn(0f, rail.height.toFloat())
+                                return ((yInRail / rail.height.coerceAtLeast(1)) * letters.size)
+                                    .toInt().coerceIn(0, letters.lastIndex)
+                            }
+                            fun jumpAtTouch() {
+                                val index = indexAtTouch()
+                                val targetIndex = (letters.indices)
+                                    .filter { anchors.containsKey(letters[it]) }
+                                    .minByOrNull { kotlin.math.abs(it - index) }
+                                targetIndex?.let { jumpToLetter(letters[it]) }
+                            }
+                            when (event.actionMasked) {
+                                android.view.MotionEvent.ACTION_DOWN -> {
+                                    touchStartIndex = indexAtTouch()
+                                    dragged = false
+                                    jumpAtTouch()
+                                    true
+                                }
+                                android.view.MotionEvent.ACTION_MOVE -> {
+                                    if (indexAtTouch() != touchStartIndex) dragged = true
+                                    jumpAtTouch()
+                                    true
+                                }
+                                android.view.MotionEvent.ACTION_UP -> {
+                                    jumpAtTouch()
+                                    if (!dragged && anchors.containsKey(letters[touchStartIndex])) {
+                                        view.performClick()
+                                    }
+                                    true
+                                }
+                                android.view.MotionEvent.ACTION_CANCEL -> true
+                                else -> false
+                            }
                         }
                     })
                 }
-                root.addView(rail, LinearLayout.LayoutParams(dp(28), dp(420)))
+                root.addView(rail, LinearLayout.LayoutParams(dp(40), pickerHeight))
             }
         }
         render()
         dialog.show()
+        // AlertDialog uses a narrow theme width by default. The picker has a
+        // long course list and an optional A-Z rail, so give it a stable,
+        // touch-friendly width on phones while keeping side margins.
+        dialog.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.92f).toInt(),
+            WindowManager.LayoutParams.WRAP_CONTENT
+        )
     }
 
     /** 日期使用日历；时间使用可滚动的密码锁式小时/分钟选择，也支持直接输入。 */
@@ -1885,7 +2389,8 @@ class MainActivity : AppCompatActivity() {
                 hiddenStore.hide(
                     hw.accountId, hw.id, hw.title, hw.courseName, hw.endTime, hw.courseKey,
                     permanent = permanent,
-                    scopeKey = currentScopeKey()
+                    scopeKey = currentScopeKey(),
+                    status = hw.status
                 )
                 Toast.makeText(this, "已隐藏（可在设置里恢复）", Toast.LENGTH_SHORT).show()
                 reloadVisibleHomework(hw.accountId)
@@ -1919,13 +2424,11 @@ class MainActivity : AppCompatActivity() {
                     else it.courseName == selected.courseName
                 }
                 targets.forEach { hw ->
-                    if (permanent && hw.isManual()) {
-                        ManualHomeworkStore(this).remove(hw.accountId, hw.id)
-                    }
                     hiddenStore.hide(
                         hw.accountId, hw.id, hw.title, hw.courseName, hw.endTime, hw.courseKey,
                         permanent = permanent,
-                        scopeKey = currentScopeKey()
+                        scopeKey = currentScopeKey(),
+                        status = hw.status
                     )
                 }
                 reloadVisibleHomework(homeworks.first().accountId)
@@ -1951,9 +2454,9 @@ class MainActivity : AppCompatActivity() {
                         hw.accountId, hw.id, hw.title, hw.courseName, hw.endTime, hw.courseKey,
                         source = if (hw.isManual()) HiddenStore.SOURCE_MANUAL else HiddenStore.SOURCE_AUTO,
                         permanent = permanent,
-                        scopeKey = currentScopeKey()
+                        scopeKey = currentScopeKey(),
+                        status = hw.status
                     )
-                    if (permanent && hw.isManual()) ManualHomeworkStore(this).remove(hw.accountId, hw.id)
                 }
                 reloadVisibleHomework(homeworks.first().accountId)
                 adapter.clearSelection()
@@ -1963,7 +2466,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 手动作业隐藏 = 移出手动列表 + 记入隐藏记录（可在设置里恢复，恢复时写回手动列表） */
+    /** 手动作业隐藏 = 记入隐藏记录；原始本地作业保留以确保可恢复。 */
     private fun confirmHideManual(hw: Homework) {
         var permanent = false
         val scopeView = createHideScopeView(
@@ -1973,13 +2476,13 @@ class MainActivity : AppCompatActivity() {
             .setTitle("隐藏这条作业？")
             .setView(scopeView)
             .setPositiveButton("隐藏") { _, _ ->
-                if (permanent) ManualHomeworkStore(this).remove(hw.accountId, hw.id)
                 hiddenStore.hide(
                     hw.accountId, hw.id, hw.title, hw.courseName, hw.endTime,
                     courseKey = hw.courseKey,
                     source = HiddenStore.SOURCE_MANUAL,
                     permanent = permanent,
-                    scopeKey = currentScopeKey()
+                    scopeKey = currentScopeKey(),
+                    status = hw.status
                 )
                 Toast.makeText(this, "已隐藏（可在设置里恢复）", Toast.LENGTH_SHORT).show()
                 reloadVisibleHomework(hw.accountId)
@@ -1988,12 +2491,20 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 恢复一条隐藏作业：手动作业先写回手动列表（自动作业直接放回列表即可） */
+    /** 恢复一条隐藏作业；手动作业保持原 ID 和完成状态。 */
     private fun restoreHiddenItem(uid: String, item: HiddenStore.HiddenItem) {
-        if (item.source == HiddenStore.SOURCE_MANUAL && item.permanent) {
-            ManualHomeworkStore(this).add(uid, item.title, item.course, item.endTime, item.courseKey)
+        if (item.source == HiddenStore.SOURCE_MANUAL) {
+            ManualHomeworkStore(this).restore(
+                accountId = uid,
+                id = item.id,
+                title = item.title,
+                courseName = item.course,
+                endTime = item.endTime,
+                courseKey = item.courseKey,
+                status = item.status
+            )
         }
-        hiddenStore.restore(uid, item.id, item.courseKey)
+        hiddenStore.restore(uid, item.id, item.courseKey, item.course)
     }
 
     /** 长按手动作业 → 彻底删除（不可恢复；普通隐藏走滑动按钮） */
@@ -2041,35 +2552,18 @@ class MainActivity : AppCompatActivity() {
                     openExactAlarmSettings()
                 }
             }
+            // The course scheduler reads the same mode flag. Rebuild both alarm
+            // families immediately so a toggle never leaves stale course alarms.
+            ReminderDispatch.enqueueAllCourses(this)
+            courseRemindersInitialized = true
+            lastCourseAlarmExact = CourseReminderPolicy.exactAlarmsEffective(
+                checked,
+                ReminderScheduler.canScheduleExact(this)
+            )
             rescheduleCurrentAccount()
         }
-        dialogView.findViewById<Button>(R.id.btn_test_notification).setOnClickListener {
-            if (!com.zhizhou.xxtassistant.remind.ReminderNotifier.canNotify(this)) {
-                Toast.makeText(this, "通知权限或系统通知总开关未开启，请先在系统设置中允许", Toast.LENGTH_LONG).show()
-                return@setOnClickListener
-            }
-            if (ReminderNotifier.channelNeedsUserAttention(this)) {
-                Toast.makeText(this, "作业提醒频道当前被静音或关闭，请在系统页面打开声音和锁屏显示后再测试", Toast.LENGTH_LONG).show()
-                runCatching {
-                    startActivity(Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
-                        putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
-                        putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, ReminderNotifier.CHANNEL_ID)
-                    })
-                }
-                return@setOnClickListener
-            }
-            val button = dialogView.findViewById<Button>(R.id.btn_test_notification)
-            button.isEnabled = false
-            val exactScheduled = com.zhizhou.xxtassistant.remind.ReminderScheduler.scheduleTestNotification(
-                this, currentUid ?: ""
-            )
-            Toast.makeText(
-                this,
-                if (exactScheduled) "请立即锁屏，10 秒后发送精确测试通知（含声音和振动）"
-                else "精确闹钟未获系统授权，将使用可能延迟的测试通知；请先允许“闹钟与提醒”",
-                Toast.LENGTH_LONG
-            ).show()
-            handler.postDelayed({ button.isEnabled = true }, 11_000L)
+        dialogView.findViewById<Button>(R.id.btn_open_notification_settings).setOnClickListener {
+            openNotificationSettings(requireReturnConfirmation = true)
         }
         // 预设节点勾选状态
         val cbIds = mapOf(
@@ -2151,6 +2645,7 @@ class MainActivity : AppCompatActivity() {
      * 自定义提醒时间使用独立的小弹窗，避免把键盘输入框塞进主设置页。
      * 三个 NumberPicker 既支持上下滑动，也保留中间数字的手动输入能力。
      */
+    @Suppress("DiscouragedApi")
     private fun showCustomReminderPicker(
         customSet: MutableList<Int>,
         presetNodes: Set<Int>,
@@ -2172,10 +2667,14 @@ class MainActivity : AppCompatActivity() {
             maxValue = max
             value = 0
             wrapSelectorWheel = false
+            // Keep a stable, readable two-digit value on both light and dark
+            // system themes. Some vendor NumberPicker implementations leave
+            // the editor blank until the first scroll otherwise.
+            setFormatter { number -> "%02d".format(Locale.CHINA, number) }
             // NumberPicker 位于竖向 column 中，不能使用 0dp 宽度权重；
             // 否则它会被测量成零宽，滚轮数字完全不可见。
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(86),
                 dp(148)
             )
             descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -2188,6 +2687,7 @@ class MainActivity : AppCompatActivity() {
                 isClickable = true
                 inputType = InputType.TYPE_CLASS_NUMBER
                 setSelectAllOnFocus(true)
+                setText("%02d".format(Locale.CHINA, value))
                 setOnClickListener {
                     requestFocus()
                     selectAll()
@@ -2320,7 +2820,17 @@ class MainActivity : AppCompatActivity() {
      */
     private fun reminderSystemStatus(): String {
         val notification = if (ReminderNotifier.canNotify(this)) "通知已允许" else "通知未允许"
-        val channel = if (ReminderNotifier.channelNeedsUserAttention(this)) "提醒频道需检查声音/锁屏" else "提醒频道正常"
+        val homeworkState = ReminderNotifier.homeworkChannelDiagnostics(this)
+        val courseState = CourseNotification.channelDiagnostics(this)
+        fun channelStatus(label: String, state: com.zhizhou.xxtassistant.remind.ReminderChannelDiagnostics): String {
+            val required = if (state.requiredReady) "必需项已开启" else "必需项未开启"
+            val lockscreen = if (state.lockscreenEnabled) "锁屏已开启" else "锁屏未开启"
+            val popup = if (state.floatingEnabled) "弹出已开启" else "弹出未开启（可选）"
+            val sound = if (state.soundEnabled) "声音已开启" else "声音未开启（可选）"
+            return "$label：$required，$lockscreen，$popup，$sound"
+        }
+        val homeworkChannel = channelStatus("作业频道", homeworkState)
+        val courseChannel = channelStatus("课程频道", courseState)
         val exact = when {
             !ReminderScheduler.isExactMode(this) -> "普通提醒模式"
             ReminderScheduler.canScheduleExact(this) -> "精确闹钟已授权"
@@ -2331,7 +2841,7 @@ class MainActivity : AppCompatActivity() {
             if (power?.isIgnoringBatteryOptimizations(packageName) == true) "电池优化已豁免"
             else "电池优化可能延迟后台提醒"
         } else "电池优化不适用"
-        return "$notification · $channel\n$exact · $battery"
+        return "$notification\n$homeworkChannel\n$courseChannel\n$exact · $battery"
     }
 
     /** 把分钟数转成好读的文案：1440 → "1 天"，90 → "90 分钟" */

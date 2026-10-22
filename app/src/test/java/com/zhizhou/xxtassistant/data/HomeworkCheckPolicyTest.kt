@@ -18,6 +18,11 @@ class HomeworkCheckPolicyTest {
     }
 
     @Test
+    fun submittedUnknownHomeworkNeedsDetailCheck() {
+        assertTrue(HomeworkCheckPolicy.needsDetailCheck(homework(0L, Homework.SUBMITTED), now))
+    }
+
+    @Test
     fun futureHomeworkDoesNotNeedRepeatedDetailCheck() {
         assertFalse(HomeworkCheckPolicy.needsDetailCheck(homework(2_001L, Homework.PENDING), now))
     }

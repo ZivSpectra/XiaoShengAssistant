@@ -1,172 +1,156 @@
-# 学习通作业助手（XueXiTongAssistant）
+# 小笙助手（XiaoShengAssistant）
 
-一个**只读**的安卓作业提醒工具。帮你自动抓取学习通所有课程的作业截止时间、
-区分完成状态、按截止时间排序、设置多个提前提醒节点。退出当前账号后，别人也能
-在同一台设备上登录自己的学习通账号使用。
+**当前版本：v0.2.6（体验版）**
 
-**安全底线（本项目最高原则）：**
-- ✅ 所有数据（Cookie、作业信息）**只保存在手机本地**，绝不发送到任何第三方服务器
-- ✅ 网络请求只发给学习通官方域名（*.chaoxing.com）
-- ✅ 只读作业数据；点击作业只打开学习通对应页面，**由你亲手完成**
-- ✅ 绝不自动提交作业、绝不自动答题
-- ✅ 日志不记录任何 Cookie / 密码 / 账号敏感信息
+小笙助手是一款**只读的学习通作业与课程提醒工具**：它把学习通课程、作业状态和
+截止时间整理成可筛选的本地列表，并提供课程表导入和锁屏提醒。应用不会自动答题、
+不会自动提交作业，也不会把 Cookie、密码或业务数据上传到第三方服务器。
 
----
+> 这是持续迭代中的体验版本。自动化构建和单元测试已通过，但仍有少量真机使用体验需要
+> 后续验证和改进。发布包未签名；安装前请允许安装来自此来源的应用。仓库不包含真实账号、
+> Cookie、浏览器会话或设备专属配置。
 
-## 功能一览
+## 功能速览
 
-| 功能 | 说明 |
-|---|---|
-| 账号切换 | 设置中退出当前账号，重新登录即可更换账号；各账号本地作业记录按 uid 保留 |
-| 自动抓作业 | 抓取所有课程的作业标题、截止时间、完成状态 |
-| 手动添加作业 | 老师线下布置的作业也能自己加：填名称/课程/截止时间，与自动作业合并展示、统一排序、统一提醒 |
-| 排序 | 未完成在前、已完成在后，各自按截止时间【从近到远】排列 |
-| 状态区分 | 未完成（红）/ 待批阅（橙）/ 已完成（绿） |
-| 多节点提醒 | 可勾选提前 1天/12小时/3小时/1小时/30分钟/15分钟，到点发通知 |
-| 点击跳转 | 点自动作业 → WebView 打开学习通对应作业页，亲手完成；手动作业长按可删除 |
-| 联调日志 | 抓取过程写进手机本地日志文件，页面改版后好排查 |
-| 时间筛选 | 预设或自定义截止时间范围；未知截止时间单独提示并每日提醒补充 |
-| 隐藏管理 | 作业/课程可仅隐藏当前范围或永久隐藏，均可恢复 |
+| 模块 | 当前能力 |
+| --- | --- |
+| 学习通作业 | 读取课程与作业列表；必要时沿官方详情入口逐条核对截止时间 |
+| 稳定缓存 | 已获取的可靠作业会本地保留；网络失败、验证码或解析为空不会抹掉旧数据 |
+| 空课程判定 | 只有页面明确显示“暂无作业”才会删除该课程旧作业缓存 |
+| 时间筛选 | 全部、今天、未来 7 天、本周、本月、自定义日期范围；未知时间不混入日期范围 |
+| 未知截止时间 | 按课程汇总，一天最多提示一次；已完成且时间未知的作业不显示 |
+| 手动作业 | 可添加没有学习通作业的课程，截止时间支持本地完成、隐藏和提醒 |
+| 课程选择 | 最近使用/添加、拼音首字母两种排序；数字和特殊字符归入 `#`，提供 A-Z 快速索引 |
+| 列表交互 | 默认单列；课程分组模式可收起课程，并可把同一课程内部作业设为双列 |
+| 课程表 | 日视图/周视图、手动添加、CSV/TSV/XLSX/HTML 预览导入、通用教务 WebView 导入 |
+| 课程提醒 | 课前 30 分钟、前一天 20:00 准备提醒；通知默认保持到用户点击“知道了” |
+| 作业提醒 | 多个提前节点、独立滚轮/手动输入、自定义节点长按删除、可选精确闹钟模式 |
+| 会话 | WebView 登录/验证；验证完成只同步 Cookie，用户手动点击“重新检查” |
 
----
+## 界面预览
 
-## 界面速览
+截图来自本地模拟器和脱敏演示数据，只展示界面状态，不包含真实账号、密码、Cookie
+或完整学习通会话地址。
 
-下面的截图来自本地联调用的合成账号（只显示 `…1234`），课程名和作业也是演示数据，
-不包含真实账号、密码、Cookie 或完整会话地址。
+### 作业主列表
 
-### 主列表：按课程分组、状态分区
+课程分组、欠账、未完成、已完成和未知截止时间提示相互分开；普通列表默认单列。
 
-课程可以展开或收起；欠账、未完成、已完成和待补截止时间彼此分开，避免把过期作业
-和当前待办混在一起。
+![作业主列表](docs/images/main-demo.png)
 
-![主列表演示](docs/images/main-demo.png)
+### 提醒设置
 
-### 提醒设置：多个提前节点与精确闹钟
+提醒节点可以多选；自定义节点在独立小弹窗中使用滚轮，也可以点击数字输入分钟数。
 
-可同时选择多个提前提醒节点。精确闹钟只在用户主动开启并授予系统权限后使用，普通
-提醒仍使用系统允许的后台调度方式。
+![提醒设置](docs/images/reminder-demo.png)
 
-![提醒设置演示](docs/images/reminder-demo.png)
+### 权限引导
 
-### 权限引导：通知权限由系统控制
+通知权限、锁屏显示、声音和精确闹钟都由 Android 系统控制，应用只能逐项引导用户打开，
+不能绕过手机厂商的电池策略。
 
-Android 13 及以上首次发送通知前会请求系统通知权限。锁屏显示、声音、勿扰模式和
-厂商后台策略仍由手机系统决定，应用不能绕过这些设置。
+![权限引导](docs/images/permission-demo.png)
 
-![通知权限演示](docs/images/permission-demo.png)
+### 课程表与导入
 
----
+课程表支持日/周视图、学期切换、手动添加、CSV/TSV/XLSX 表格导入，以及在应用内打开
+学校教务系统、登录后读取当前课表并预览确认。导入前只显示预览，确认后才替换同一学期、
+同一来源的课程。
+
+![课程表周视图](docs/images/course-table-demo.png)
+
+![教务系统导入](docs/images/course-import-demo.png)
+
+## 工作原理
+
+```text
+WebView 登录学习通
+    -> 本地保存当前账号 Cookie（按 uid 隔离）
+    -> 课程列表接口 / 网页入口
+    -> 作业列表解析标题、状态、官方详情地址
+    -> 用户点击“重新检查”时逐条打开详情页读取可靠截止时间
+    -> 本地缓存合并、日期筛选、分组展示
+    -> AlarmManager / WorkManager 到点发锁屏通知
+```
+
+列表接口里的时间只作为候选值。详情页出现“作答时间：开始至截止”时，截止时间以详情
+页为准；没有充分证据时保留“未知”，不拿课程结束时间或发布时间冒充作业截止时间。
+
+### 会话与隐私
+
+- 登录、验证码和学习通网页由用户本人在官方 WebView 中完成。
+- 应用只保存当前账号所需的 Cookie；验证页完成后同步 Cookie，不会自动连续深度抓取。
+- 调试日志仅在 Debug 构建写入应用私有目录，代码不会写入密码、Cookie 或完整会话令牌。
+- 退出登录会取消作业和课程提醒，但保留该 uid 的本地作业、课程和隐藏设置，方便以后重新登录。
+
+### 通知边界
+
+应用使用高优先级通知频道、公开锁屏可见性、声音和振动配置，并在系统重启、时区变化、
+日期变化和应用更新后重排任务。Android 或厂商仍可能因为通知总开关、频道静音、勿扰模式、
+电池优化、后台限制或用户强制停止应用而延迟/阻止通知；这些设置必须在目标手机上验收。
 
 ## 项目结构
 
-```
-XueXiTongAssistant/
-├── settings.gradle.kts          # 项目设置：依赖仓库 + 模块
-├── build.gradle.kts             # 根构建：Android 插件版本
-├── gradle.properties            # Gradle 参数
-├── gradle/wrapper/              # Gradle 版本配置
-└── app/
-    ├── build.gradle.kts         # App 规格：包名、SDK 版本、依赖库
-    └── src/main/
-        ├── AndroidManifest.xml  # 权限 + 三个页面声明
-        ├── java/com/zhizhou/xxtassistant/
-        │   ├── LoginActivity.kt        # 登录页（WebView 登录）
-        │   ├── MainActivity.kt         # 主页（作业列表 + 提醒设置 + 退出登录）
-        │   ├── HomeworkDetailActivity.kt # 作业详情（WebView 打开学习通作业页）
-        │   ├── HomeworkAdapter.kt      # 作业列表适配器（排序 + 状态颜色）
-        │   ├── data/
-        │   │   ├── Homework.kt         # 作业数据模型
-        │   │   ├── AccountManager.kt   # 当前账号 Cookie 管理（本地存储）
-        │   │   └── XueXiTongApi.kt     # 抓取引擎（课程→作业，宽松解析）
-        │   ├── remind/
-        │   │   ├── ReminderScheduler.kt # 提醒调度（换算定时任务）
-        │   │   └── ReminderWorker.kt    # 到点发通知
-        │   └── util/
-        │       └── DebugLog.kt          # 联调日志（不记 Cookie）
-        └── res/                  # 布局、文字、颜色、主题、图标
-```
-
-`audit/小笙助手-开发调试学习教程.md` 记录了从登录会话、课程/作业解析到通知调度的
-逐步学习材料；`audit/official-research.md` 记录了 Android 官方通知、精确闹钟和学习
-通页面证据。原始 XML、截图、设备日志和探索性脚本不会进入 Git 历史。
-
----
-
-## 核心原理
-
-```
-登录（WebView 官方登录页）
-    → 捕获 Cookie → 本地保存（每账号独立）
-    → 请求课程列表接口 → 每门课找"作业"模块
-    → 宽松解析作业：标题 / 截止时间 / 状态 / 跳转链接
-    → 未完成在前按截止时间从近到远排序展示
-    → 每个提醒节点 → WorkManager 定时 → 到点发通知
-```
-
-**为什么用 WebView 登录？** 学习通登录有 AES 加密，直接模拟极难；让用户
-在官方页面自己登录，我们只"捡"Cookie，安全又省事。
-
-**抓取为什么用"宽松解析 + 日志"？** 学习通页面结构随时可能改版，硬编码的
-提取规则一改版就失效。本项目宁可多匹配、不乱猜，并把过程写入日志，
-改版后看一眼 `debug_log.txt` 就能定位。
-
----
-
-## 在你电脑上跑起来
-
-1. 装 **Android Studio**（官网免费，勾选 Android SDK）
-2. **Open** 打开 `XueXiTongAssistant` 文件夹，等依赖下载完
-3. 手机开 **USB 调试**，插上电脑
-4. 点绿色 ▶ **Run** 运行到手机
-5. 测试：登录 → 主页抓作业 → 列表按截止时间排序 → 点作业跳转 → 设置提醒
-
-> 首次抓取因要遍历所有课程，可能需 10~60 秒，属正常现象。
-
-本仓库当前以 Android Studio 工程形式发布，没有提交机器专用的 `local.properties`、
-账号状态或 Gradle 缓存。首次打开时请在 Android Studio 的 SDK Manager 安装 Android
-API 34，并让 IDE 根据 `gradle/wrapper/gradle-wrapper.properties` 完成依赖同步。
-
-### 本地验证
-
-在 Android Studio 的 Terminal 中执行对应的 Gradle 任务，或直接使用右侧 Gradle 面板：
-
 ```text
-testDebugUnitTest
-lintDebug
-assembleDebug
+app/src/main/java/com/zhizhou/xxtassistant/
+├── LoginActivity.kt                 # 学习通 WebView 登录与 Cookie 捕获
+├── MainActivity.kt                  # 作业列表、筛选、分组、设置和手动作业
+├── HomeworkAdapter.kt               # 列表排序、折叠、批量操作
+├── HomeworkDetailActivity.kt        # 官方作业详情 WebView（只读打开）
+├── CourseTableActivity.kt            # 课程表日/周视图与表格导入
+├── CourseWebImportActivity.kt        # 通用教务系统 WebView 导入
+├── data/
+│   ├── XueXiTongApi.kt              # 课程、作业、详情链路
+│   ├── DeadlineParser.kt             # 截止时间解析
+│   ├── HomeworkCache*.kt             # 缓存合并与检查策略
+│   ├── CourseSchedule*.kt            # 课程表模型和本地存储
+│   └── CourseTableParser.kt          # CSV/TSV/HTML/XLSX 解析
+└── remind/
+    ├── ReminderScheduler.kt          # 作业提醒调度
+    ├── CourseReminderScheduler.kt     # 课程提醒调度
+    ├── *Receiver.kt                   # 闹钟广播接收与通知
+    └── ReminderWorker.kt              # WorkManager 兜底
 ```
 
-当前版本的本地验证结果为：18 个单元测试通过、`lintDebug` 无问题、Debug APK 构建
-成功。没有连接目标真机，因此特定厂商的息屏声音、锁屏显示和后台保活仍需安装 APK
-后在目标手机上验收。
+`audit/小笙助手-开发调试学习教程.md` 是面向新手的逐步说明；`audit/official-research.md`
+记录了学习通页面证据、Android 通知边界和本地复测结论。
 
----
+## 本地构建与验证
 
-## 联调模式（页面改版时用）
+使用 Android Studio 打开项目，安装 Android SDK 34 和 JDK 17 后即可同步并构建。也可以在
+项目根目录通过 Gradle Wrapper 执行：
 
-1. 确保 `util/DebugLog.kt` 里 `DEBUG_MODE = true`
-2. 真机运行一次，抓取后手机存储里出现 `debug_log.txt`（Android/data/你的包名/files/ 下）
-3. 把日志文件发出来，就能定位是哪一步（课程接口 / 作业 iframe / 解析）出了问题
+```powershell
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+```
 
----
+本轮本地回归已执行并通过：
 
-## 常见问题
+- `testDebugUnitTest`：169 项 JVM 单元测试，0 failures，0 errors
+- `lintDebug`：0 errors，1 warning（Compose primitive state 装箱性能提示）
+- `assembleDebug` 与 `assembleRelease`：均构建成功
+- 本次没有连接 Android 设备，未能复测页面交互、息屏锁屏声音或后台清理后的提醒表现
 
-| 问题 | 解决办法 |
-|---|---|
-| 下载依赖很慢 | `settings.gradle.kts` 里加国内镜像仓库 |
-| 提示 SDK 版本不对 | AS 里装 Android 14（API 34） |
-| 登录成功但没跳转 | 学习通偶尔有验证码/滑块，手动过一下 |
-| 抓取不到作业 | 看联调日志，八成是页面改版，按日志定位后更新解析规则 |
-| 想重新登录 | 打开设置 → 退出登录 |
+Release APK 文件名为 `XiaoShengAssistant-v0.2.6-unsigned.apk`，发布后可从
+[GitHub Releases](https://github.com/ZivSpectra/XiaoShengAssistant/releases/latest) 获取。
+该 APK 未签名，不能覆盖安装在已安装的正式签名版本上；正式签名证书不会上传到仓库。
 
----
+不同品牌的锁屏声音、后台保活、精确闹钟权限和电池策略仍需在目标设备上实际验收。没有
+精确闹钟权限时，系统可能延迟提醒；授予该权限后应用才会请求精确闹钟。
 
-## 安全与合规说明
+## 第三方项目与许可证
 
-- 本项目只面向本人及身边同学的学习提醒需求，**只读不提交**。
-- 学习通官方对非官方接口未做承诺，接口/页面可能变动，本项目为个人学习用途。
-- 请勿将本项目用于任何自动答题、刷课等违反平台规则的行为。
-- 发布前请确认没有把 `local.properties`、`xxt_accounts.xml`、`edge-session/`、原始
-  联调日志或浏览器会话目录加入提交；仓库根目录的 `.gitignore` 已默认排除这些文件。
+课程表交互思路参考了 [Potato-DiGua/Timetable](https://github.com/Potato-DiGua/Timetable)。
+“自动关闭开屏/摇一摇广告”方向参考了 [GuoXiCheng/SKIP](https://github.com/GuoXiCheng/SKIP)，
+画图模块方向参考了 [ZivSpectra/Plotforge](https://github.com/ZivSpectra/Plotforge)。
+当前版本没有复制这些项目的代码、品牌或素材。许可证核对、使用边界和后续引入代码的条件
+详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+`D:\小笙\表情包成品\` 暂不随公开仓库提交。公开分发前仍需确认生成服务条款、输入素材权利
+和表情包的可再分发范围。
+
+## 免责声明
+
+学习通接口和页面属于第三方服务，可能随时改版或要求验证码。小笙助手只用于个人学习管理，
+不用于自动答题、刷课、绕过验证码或提交作业。请遵守学校和平台规则；通知能否在锁屏、息屏
+和厂商后台限制下正常送达，需在自己的设备上验证。欢迎通过 GitHub Issues 提交体验问题。

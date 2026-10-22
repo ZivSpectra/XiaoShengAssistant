@@ -35,7 +35,7 @@ class HomeworkAdapter(
         MISSED("欠账区", R.color.status_missed, 0xFFF5CFCFu.toInt()),
         UPCOMING("未截止", R.color.status_pending, 0xFFFFF2CCu.toInt()),
         DONE("已完成", R.color.status_done, 0xFFE8F5E9u.toInt()),
-        UNKNOWN("待补截止时间", R.color.text_secondary, 0xFFEFF2F5u.toInt())
+        UNKNOWN("待补截止时间", R.color.status_unknown, 0xFFFFF4CCu.toInt())
     }
 
     private data class SectionHeaderToken(val section: Section)
@@ -77,6 +77,14 @@ class HomeworkAdapter(
             collapsedGroups.clear()
             knownGroupKeys.clear()
             collapsedSections.clear()
+            // Switching from the flat list to grouped mode is a new grouping
+            // session. Start with the same collapsed state as a fresh load so
+            // a long list does not suddenly expand over the whole screen.
+            if (newMode == ViewSettings.MODE_GROUP) {
+                val currentKeys = groups.keys.map(::groupKey)
+                collapsedGroups.addAll(currentKeys)
+                knownGroupKeys.addAll(currentKeys)
+            }
         }
         rebuildPlan()
         notifyDataSetChanged()
@@ -256,10 +264,10 @@ class HomeworkAdapter(
             notifyDataSetChanged()
         }
         holder.btnMore.setOnClickListener { onHideCourse(id.identity, list.toList()) }
-        holder.itemView.setOnLongClickListener {
-            onHideCourse(id.identity, list.toList())
-            true
-        }
+        // Long-press is reserved for selecting individual homework items for
+        // batch actions. Course headers already expose their menu button;
+        // hiding the whole course on a long-press was too easy to trigger.
+        holder.itemView.setOnLongClickListener(null)
     }
 
     private fun bindItem(holder: ItemHolder, position: Int) {
@@ -275,6 +283,7 @@ class HomeworkAdapter(
         holder.tvPinTag.visibility = if (pinned.isPinned(hw.accountId, hw.id, hw.courseKey)) View.VISIBLE else View.GONE
 
         val (colorRes, badgeBg) = when {
+            hw.endTime <= 0L -> R.color.status_unknown to R.drawable.bg_badge_yellow
             hw.isMissed() -> R.color.status_missed to R.drawable.bg_badge_red
             hw.status == Homework.PENDING -> R.color.status_pending to R.drawable.bg_badge_red
             hw.status == Homework.SUBMITTED -> R.color.status_submitted to R.drawable.bg_badge_orange

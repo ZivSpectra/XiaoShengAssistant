@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- ========== 品牌主色（学习通蓝） ========== -->
-    <color name="primary">#1565C0</color>
-    <color name="primary_container">#D6E5FA</color>
-    <color name="on_primary_container">#0A3D74</color>
+    <!-- ========== Material 3 light palette shared by every root page ========== -->
+    <color name="primary">#6750A4</color>
+    <color name="primary_container">#EADDFF</color>
+    <color name="on_primary_container">#21005D</color>
 
     <!-- ========== 页面背景与卡片 ========== -->
-    <color name="background">#F5F7FB</color>
+    <color name="background">#FFFBFE</color>
     <color name="surface">#FFFFFF</color>
 
     <!-- ========== 文字 ========== -->
@@ -18,11 +18,13 @@
     <color name="status_submitted">#F57C00</color> <!-- 待批阅：橙 -->
     <color name="status_done">#2E7D32</color>      <!-- 已完成：绿 -->
     <color name="status_missed">#B71C1C</color>    <!-- 已错过截止：深红 -->
+    <color name="status_unknown">#9A6700</color>   <!-- 待补截止时间：黄 -->
 
     <!-- 状态徽章浅色背景 -->
     <color name="badge_red_bg">#FDE8E8</color>
     <color name="badge_orange_bg">#FFF3E0</color>
     <color name="badge_green_bg">#E8F5E9</color>
+    <color name="badge_yellow_bg">#FFF4CC</color>
 
     <!-- 桌面图标底色（小笙白底） -->
     <color name="ic_launcher_background">#FFFFFF</color>
