@@ -23,6 +23,16 @@ class ReminderRecoveryPolicyTest {
     }
 
     @Test
+    fun courseChangeCreatesAccountBoundDurableRestoreRequest() {
+        val request = ReminderRecoveryPolicy.courseChange("account-1", "account-1")
+        assertEquals(
+            ReminderRecoveryPolicy.Request(ReminderRecoveryPolicy.COURSE_REBUILD_WORK_NAME, "account-1"),
+            request
+        )
+        assertEquals(null, ReminderRecoveryPolicy.courseChange("account-1", "account-2"))
+    }
+
+    @Test
     fun staleOrBlankAccountDoesNotCreateOrRunAnotherAccountsRebuild() {
         assertEquals(null, ReminderRecoveryPolicy.homeworkChange("account-1", "account-2"))
         assertEquals(null, ReminderRecoveryPolicy.homeworkChange("", "account-1"))

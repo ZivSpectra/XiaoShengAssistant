@@ -11,6 +11,9 @@ object TeachingWeekPicker {
     fun next(week: Int): Int = clamp(week + 1)
     fun previous(week: Int): Int = clamp(week - 1)
 
+    fun isTodayColumn(displayedWeek: Int, currentWeek: Int, columnDay: Int, todayDay: Int): Boolean =
+        displayedWeek == currentWeek && columnDay == todayDay
+
     /** A left swipe advances a week; a right swipe returns to the previous week. */
     fun afterHorizontalSwipe(week: Int, dragAmountPx: Float, thresholdPx: Float = 72f): Int = when {
         dragAmountPx <= -thresholdPx -> next(week)

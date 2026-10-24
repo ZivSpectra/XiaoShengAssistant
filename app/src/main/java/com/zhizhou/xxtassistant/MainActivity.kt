@@ -2,8 +2,6 @@ package com.zhizhou.xxtassistant
 
 import android.app.DatePickerDialog
 import android.annotation.SuppressLint
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -110,13 +108,14 @@ class MainActivity : AppCompatActivity() {
     private var courseRemindersInitialized = false
     /** Exact/inexact mode used by the last course-alarm rebuild. */
     private var lastCourseAlarmExact: Boolean? = null
+    private val verificationPrefs by lazy { getSharedPreferences("xxt_verification_cooldown", MODE_PRIVATE) }
 
     companion object {
         const val EXTRA_OPEN_SETTINGS = "open_settings"
         /** 仅用于记录缓存新鲜度；缓存存在时不会因为 onResume 自动请求。 */
-        private const val CACHE_MAX_AGE_MS = 15L * 60L * 1000L
+        private const val CACHE_MAX_AGE_MS = 6L * 60L * 60L * 1000L
         /** 网络失败后的自动重试冷却；仅无缓存首次进入使用。 */
-        private const val AUTO_FETCH_RETRY_COOLDOWN_MS = 5L * 60L * 1000L
+        private const val AUTO_FETCH_RETRY_COOLDOWN_MS = 30L * 60L * 1000L
         private const val DAY_MS = 24L * 60L * 60L * 1000L
         private const val PENDING_PERMISSION_STEP = "pending_permission_step"
         private const val PENDING_CONFIRM_ONLY = "pending_permission_confirm_only"
@@ -139,6 +138,7 @@ class MainActivity : AppCompatActivity() {
                 // 验证就再次连续请求，容易重新触发风控；用户确认后手动点一次检查。
                 currentUid?.let { uid ->
                     api.resetTransientSession(uid)
+                    verificationPrefs.edit().remove("blocked_until").apply()
                     Toast.makeText(this, "验证结果已同步，请点击“重新检查”核对作业。", Toast.LENGTH_LONG).show()
                     reloadVisibleHomework(uid)
                 }
@@ -221,7 +221,7 @@ class MainActivity : AppCompatActivity() {
                 if (::adapter.isInitialized && adapter.isSelectionMode()) {
                     adapter.clearSelection()
                 } else {
-                    finish()
+                    returnToTodayOrExit(this@MainActivity)
                 }
             }
         })
@@ -416,6 +416,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupButtons() {
+        findViewById<android.widget.ImageButton>(R.id.btn_homework_menu).setOnClickListener { anchor ->
+            android.widget.PopupMenu(this, anchor).apply {
+                menu.add(0, 1, 0, "显示设置")
+                menu.add(0, 2, 1, "作业提醒")
+                menu.add(0, 3, 2, "已隐藏作业")
+                setOnMenuItemClickListener { item ->
+                    when (item.itemId) {
+                        1 -> showSettingsDialog()
+                        2 -> showRemindSettingDialog()
+                        3 -> showRestoreHiddenDialog()
+                    }
+                    true
+                }
+                show()
+            }
+        }
         findViewById<Button>(R.id.btn_refresh).setOnClickListener {
             currentUid?.let { loadHomework(it, force = true) }
         }
@@ -476,17 +492,6 @@ class MainActivity : AppCompatActivity() {
         syncLayoutChoices(rgMode.checkedRadioButtonId)
         rgMode.setOnCheckedChangeListener { _, checkedId -> syncLayoutChoices(checkedId) }
 
-        // 学习交流群：点击复制群号
-        dialogView.findViewById<TextView>(R.id.tv_group_code).setOnClickListener {
-            val cm = getSystemService(ClipboardManager::class.java)
-            cm.setPrimaryClip(ClipData.newPlainText("学习交流群", "243863924"))
-            Toast.makeText(this, "群号已复制：243863924", Toast.LENGTH_SHORT).show()
-        }
-
-        // 联调日志：排查"抓不到作业"等真机问题
-        dialogView.findViewById<TextView>(R.id.tv_debug_log).setOnClickListener {
-            showDebugLogDialog()
-        }
         btnExpandAll.setOnClickListener {
             pendingGroupExpanded = true
             adapter.setAllGroupsExpanded(true)
@@ -498,19 +503,8 @@ class MainActivity : AppCompatActivity() {
         dialogView.findViewById<Button>(R.id.btn_manage_courses).setOnClickListener {
             showManualCourseManager()
         }
-        dialogView.findViewById<TextView>(R.id.tv_permission_status).text = reminderSystemStatus()
-        dialogView.findViewById<Button>(R.id.btn_notification_permission).setOnClickListener {
-            openNotificationSettings(requireReturnConfirmation = true)
-        }
-        dialogView.findViewById<Button>(R.id.btn_exact_alarm_permission).setOnClickListener {
-            openExactAlarmSettings(requireReturnConfirmation = true)
-        }
-        dialogView.findViewById<Button>(R.id.btn_battery_permission).setOnClickListener {
-            openBatterySettings(requireReturnConfirmation = true)
-        }
 
-        val hiddenCount = currentUid?.let { hiddenStore.list(it).size } ?: 0
-        val dialog = AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle(R.string.settings_title)
             .setView(dialogView)
             .setPositiveButton("确定") { _, _ ->
@@ -533,27 +527,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
             }
-            .setNeutralButton("已隐藏作业（$hiddenCount）") { _, _ ->
-                showRestoreHiddenDialog()
-            }
             .setNegativeButton("取消", null)
             .show()
 
-        dialogView.findViewById<Button>(R.id.btn_logout).setOnClickListener {
-            dialog.dismiss()
-            confirmLogout()
-        }
-    }
-
-    private fun confirmLogout() {
-        AlertDialog.Builder(this)
-            .setTitle("退出登录")
-            .setMessage("只清除登录凭证，当前账号的作业、课程、隐藏和截止时间设置都会保留。")
-            .setPositiveButton("退出") { _, _ ->
-                performLogout()
-            }
-            .setNegativeButton("取消", null)
-            .show()
     }
 
     /**
@@ -1064,36 +1040,6 @@ class MainActivity : AppCompatActivity() {
         currentUid?.let { reloadVisibleHomework(it) }
     }
 
-    /** 联调日志：读取本地抓取日志，方便排查"抓不到作业"这类真机问题 */
-    private fun showDebugLogDialog() {
-        val content = DebugLog.read(this)
-        if (content.isBlank()) {
-            Toast.makeText(this, "暂无日志（先点一次「重新检查」再回来看）", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val tv = TextView(this).apply {
-            text = content
-            textSize = 11f
-            typeface = android.graphics.Typeface.MONOSPACE
-            setLineSpacing(0f, 1.15f)
-            setTextColor(getColorCompat(R.color.text_primary))
-        }
-        val scroll = ScrollView(this).apply {
-            addView(tv)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
-        AlertDialog.Builder(this)
-            .setTitle("联调日志（不含账号敏感信息）")
-            .setView(scroll)
-            .setPositiveButton("复制日志") { _, _ ->
-                val cm = getSystemService(ClipboardManager::class.java)
-                cm.setPrimaryClip(ClipData.newPlainText("联调日志", content))
-                Toast.makeText(this, "日志已复制", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("关闭", null)
-            .show()
-    }
-
     private fun showManualCourseManager() {
         val uid = currentUid ?: return
         val courses = courseStore.list(uid).filter { it.manual }
@@ -1303,19 +1249,27 @@ class MainActivity : AppCompatActivity() {
         val coolingDown = cache.isFetchAttemptCoolingDown(uid, AUTO_FETCH_RETRY_COOLDOWN_MS)
         // 首次进入无缓存，或缓存确实过期时才自动请求；其余情况只由用户
         // 点击“重新检查”触发，避免返回页面/切换窗口反复刷新。
-        val shouldFetch = force || (wantsAutoFetch && !coolingDown)
+        val verificationCooldown = System.currentTimeMillis() < verificationPrefs.getLong("blocked_until", 0L)
+        val shouldFetch = !verificationCooldown && (force || (wantsAutoFetch && !coolingDown))
         DebugLog.log(
             this,
-            "[HOMEWORK_FETCH][$fetchTraceId] decision force=$force firstEntry=$firstEntryWithoutCache cached=${cached.size} manual=${manual.size} cacheStale=$cacheStale cooldown=$coolingDown willFetch=$shouldFetch"
+            "[HOMEWORK_FETCH][$fetchTraceId] decision force=$force firstEntry=$firstEntryWithoutCache cached=${cached.size} manual=${manual.size} cacheStale=$cacheStale cooldown=$coolingDown verificationCooldown=$verificationCooldown willFetch=$shouldFetch"
         )
         if (!shouldFetch) {
-            val reason = if (wantsAutoFetch && coolingDown) "retry_cooldown" else "cache_fresh"
+            val reason = when {
+                verificationCooldown -> "verification_cooldown"
+                wantsAutoFetch && coolingDown -> "retry_cooldown"
+                else -> "cache_fresh"
+            }
             DebugLog.log(this, "[HOMEWORK_FETCH][$fetchTraceId] skipped reason=$reason")
             hideFetchProgress()
             setRefreshEnabled(true)
             rescheduleCurrentAccount()
             showUnknownDeadlinePromptIfNeeded()
             showManualExpiredPromptIfNeeded()
+            if (force && verificationCooldown) {
+                Toast.makeText(this, "刚才学习通要求验证。请先完成验证，或稍后再重新检查，避免连续触发。", Toast.LENGTH_LONG).show()
+            }
             return
         }
 
@@ -1441,6 +1395,9 @@ class MainActivity : AppCompatActivity() {
                 handler.post {
                     if (generation != loadGeneration.get() || currentUid != uid) return@post
                     if (e is XueXiTongApi.AntiSpiderException) {
+                        verificationPrefs.edit()
+                            .putLong("blocked_until", System.currentTimeMillis() + 30L * 60L * 1000L)
+                            .apply()
                         showAntiSpiderDialog(e.requestUrl)
                     } else if (e is XueXiTongApi.SessionExpiredException) {
                         showSessionExpiredDialog()

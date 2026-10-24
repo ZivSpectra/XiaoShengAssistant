@@ -6,6 +6,9 @@ import android.content.Intent
 import com.zhizhou.xxtassistant.data.AccountManager
 import com.zhizhou.xxtassistant.data.CourseSchedule
 import com.zhizhou.xxtassistant.data.CourseScheduleStore
+import com.zhizhou.xxtassistant.data.CoursePeriod
+import com.zhizhou.xxtassistant.data.CoursePeriodStore
+import com.zhizhou.xxtassistant.util.DebugLog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -39,10 +42,12 @@ class CourseReminderReceiver : BroadcastReceiver() {
                             intent.getLongExtra(CourseReminderScheduler.EXTRA_START, 0L)
                         )
                     )
-                    CourseReminderScheduler.ACTION_DISMISS -> CourseNotification.cancelCourse(
+                    CourseReminderScheduler.ACTION_DISMISS -> CourseNotification.acknowledgeCourse(
                         context,
                         accountId,
-                        intent.getIntExtra(CourseReminderScheduler.EXTRA_NOTIFICATION_ID, 0)
+                        intent.getIntExtra(CourseReminderScheduler.EXTRA_NOTIFICATION_ID, 0),
+                        intent.getStringExtra(CourseReminderScheduler.EXTRA_COURSE_ID).orEmpty(),
+                        intent.getLongExtra(CourseReminderScheduler.EXTRA_START, 0L)
                     )
                     CourseReminderScheduler.ACTION_PREP -> {
                         val targetDay = intent.getLongExtra(CourseReminderScheduler.EXTRA_TARGET_DAY, 0L)
@@ -54,7 +59,8 @@ class CourseReminderReceiver : BroadcastReceiver() {
         ReminderDispatch.enqueueCourses(
             context = context,
             accountId = accountId,
-            schedules = { CourseScheduleStore(context).list(accountId) }
+            schedules = { CourseScheduleStore(context).list(accountId) },
+            durable = false
         )
     }
 
@@ -64,12 +70,28 @@ class CourseReminderReceiver : BroadcastReceiver() {
 internal fun courseNotificationId(accountId: String, courseId: String, startAt: Long): Int =
     ("$accountId:$courseId:$startAt").hashCode().and(0x7fffffff)
 
+internal fun courseOccurrenceKey(accountId: String, courseId: String, startAt: Long): String =
+    "${accountId.length}:$accountId${courseId.length}:$courseId$startAt"
+
 object CourseNotification {
     const val CHANNEL_ID = "course_schedule_v1"
     private const val PREFS = "xxt_course_notifications"
     private const val IDS = "ids"
+    private const val ACKNOWLEDGED = "acknowledged"
     private const val SEPARATOR = "\u0000"
     private val notificationLock = Any()
+
+    internal fun acknowledgedOccurrences(context: Context): Set<String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getStringSet(ACKNOWLEDGED, emptySet()).orEmpty().toSet()
+
+    internal fun activeNotificationIds(context: Context): Set<Int> =
+        runCatching {
+            context.getSystemService(android.app.NotificationManager::class.java)
+                ?.activeNotifications
+                ?.filter { it.notification.channelId == CHANNEL_ID }
+                ?.mapTo(mutableSetOf()) { it.id }.orEmpty()
+        }.getOrDefault(emptySet())
 
     /** Detailed state used by the permission page to identify the exact gap. */
     fun channelDiagnostics(context: Context): ReminderChannelDiagnostics {
@@ -114,6 +136,7 @@ object CourseNotification {
     fun notifyCourse(context: Context, accountId: String, id: Int, courseId: String, title: String, room: String, startAt: Long) {
         if (accountId.isBlank() || AccountManager(context).getActiveUid() != accountId) return
         if (!CourseReminderScheduler.isOccurrenceCurrent(context, accountId, courseId, startAt)) return
+        if (courseOccurrenceKey(accountId, courseId, startAt) in acknowledgedOccurrences(context)) return
         val manager = context.getSystemService(android.app.NotificationManager::class.java) ?: return
         createChannel(manager)
         if (!ReminderNotifier.canNotify(context)) return
@@ -124,6 +147,8 @@ object CourseNotification {
             data = android.net.Uri.parse("xxt://course-notification/dismiss/$accountId/$id")
             putExtra(CourseReminderScheduler.EXTRA_ACCOUNT, accountId)
             putExtra(CourseReminderScheduler.EXTRA_NOTIFICATION_ID, id)
+            putExtra(CourseReminderScheduler.EXTRA_COURSE_ID, courseId)
+            putExtra(CourseReminderScheduler.EXTRA_START, startAt)
         }
         val dismiss = android.app.PendingIntent.getBroadcast(
             context,
@@ -159,9 +184,27 @@ object CourseNotification {
             // older compatible notification implementations).
             .setDefaults(android.app.Notification.DEFAULT_ALL)
             .build()
-        if (AccountManager(context).getActiveUid() != accountId) return
-        manager.notify(id, notification)
-        rememberNotificationId(context, accountId, id)
+        synchronized(notificationLock) {
+            if (AccountManager(context).getActiveUid() != accountId ||
+                courseOccurrenceKey(accountId, courseId, startAt) in acknowledgedOccurrences(context)) return
+            val posted = runCatching { manager.notify(id, notification) }.onFailure {
+                DebugLog.log(context, "课程提醒通知发送失败：${it.javaClass.simpleName}")
+            }.isSuccess
+            if (!posted) return
+            rememberNotificationId(context, accountId, id)
+        }
+    }
+
+    fun acknowledgeCourse(context: Context, accountId: String, id: Int, courseId: String, startAt: Long) {
+        if (courseId.isNotBlank() && startAt > 0L) {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            synchronized(notificationLock) {
+                val acknowledged = prefs.getStringSet(ACKNOWLEDGED, emptySet()).orEmpty().toMutableSet()
+                acknowledged += courseOccurrenceKey(accountId, courseId, startAt)
+                prefs.edit().putStringSet(ACKNOWLEDGED, acknowledged).commit()
+            }
+        }
+        cancelCourse(context, accountId, id)
     }
 
     fun cancelCourse(context: Context, accountId: String, id: Int) {
@@ -188,8 +231,8 @@ object CourseNotification {
         )
         if (currentCourses.isEmpty()) return
         val date = SimpleDateFormat("M月d日", Locale.CHINA).format(Date(targetDay))
-        val text = preparationSummary(currentCourses)
-        manager.notify(preparationNotificationId(accountId, targetDay), androidx.core.app.NotificationCompat.Builder(context, CHANNEL_ID)
+        val text = preparationSummary(currentCourses, CoursePeriodStore(context).list(accountId))
+        val notification = androidx.core.app.NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(com.zhizhou.xxtassistant.R.drawable.ic_launcher_foreground)
             .setContentTitle("明日课程准备 · $date")
             .setContentText(currentCourses.joinToString("、") { it.name })
@@ -199,8 +242,14 @@ object CourseNotification {
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
-            .build())
+            .build()
         if (AccountManager(context).getActiveUid() != accountId) return
+        val posted = runCatching {
+            manager.notify(preparationNotificationId(accountId, targetDay), notification)
+        }.onFailure {
+            DebugLog.log(context, "明日课程通知发送失败：${it.javaClass.simpleName}")
+        }.isSuccess
+        if (!posted) return
         rememberNotificationId(context, accountId, preparationNotificationId(accountId, targetDay))
     }
 
@@ -220,7 +269,12 @@ object CourseNotification {
                 manager?.cancel(id)
                 stored.remove(entry)
             }
-            prefs.edit().putStringSet(IDS, stored).commit()
+            val acknowledged = prefs.getStringSet(ACKNOWLEDGED, emptySet()).orEmpty().toMutableSet()
+            val acknowledgementPrefix = accountId?.takeIf { it.isNotBlank() }
+                ?.let { "${it.length}:$it" }
+            if (acknowledgementPrefix == null) acknowledged.clear()
+            else acknowledged.removeAll { it.startsWith(acknowledgementPrefix) }
+            prefs.edit().putStringSet(IDS, stored).putStringSet(ACKNOWLEDGED, acknowledged).commit()
         }
     }
 
@@ -261,9 +315,16 @@ object CourseNotification {
  * Builds the compact evening preparation list. Room/teacher data is deliberately
  * omitted: this reminder is only for deciding which books to prepare.
  */
-internal fun preparationSummary(courses: List<CourseSchedule>): String =
-    courses.sortedBy { it.startPeriod }
-        .joinToString("\n") { "${it.periodText()}  ${it.name}" }
+internal fun preparationSummary(courses: List<CourseSchedule>, periods: List<CoursePeriod>): String {
+    val bellTimes = periods.associateBy { it.period }
+    fun clock(minutes: Int): String = "%02d:%02d".format(Locale.ROOT, minutes / 60, minutes % 60)
+    return courses.sortedBy { it.startPeriod }.joinToString("\n") { course ->
+        val start = bellTimes[course.startPeriod]?.startMinute
+        val end = bellTimes[course.endPeriod]?.endMinute
+        val time = if (start != null && end != null) "${clock(start)}-${clock(end)}" else course.periodText()
+        "$time  ${course.name}"
+    }
+}
 
 /** Stable identity for the next-day preparation reminder, isolated per account. */
 internal fun preparationNotificationId(accountId: String, targetDay: Long): Int =

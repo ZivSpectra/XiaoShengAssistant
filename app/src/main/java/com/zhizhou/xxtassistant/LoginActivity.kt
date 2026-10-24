@@ -71,6 +71,8 @@ class LoginActivity : AppCompatActivity() {
     //   3 = API 已加载，收集各域 Cookie 并保存
     private var capturePhase = 0
     private var lastNavTime = 0L
+    private var capturedDisplayName: String? = null
+    private var pendingNameSyncUid: String? = null
 
     private val checkLoginRunnable = object : Runnable {
         override fun run() {
@@ -90,6 +92,30 @@ class LoginActivity : AppCompatActivity() {
             goToMain()
             return
         }
+
+        val consent = getSharedPreferences("xxt_first_run", MODE_PRIVATE)
+        if (!consent.getBoolean("disclaimer_accepted", false)) {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("使用声明")
+                .setMessage(
+                    "小笙助手由作者出于学习与交流目的开发，仅用于个人学习管理。" +
+                        "应用不会自动答题或提交作业。请遵守学校及相关平台规则，不得将本应用用于任何违法用途。" +
+                        "学习通等第三方服务由其各自运营方提供，使用前请确认你有权访问相关账号和数据。"
+                )
+                .setCancelable(false)
+                .setPositiveButton("我已阅读并同意") { _, _ ->
+                    consent.edit().putBoolean("disclaimer_accepted", true).apply()
+                    showLoginPage()
+                }
+                .show()
+            return
+        }
+
+        showLoginPage()
+    }
+
+    private fun showLoginPage() {
+        if (isFinishing || isDestroyed) return
 
         setContentView(R.layout.activity_login)
 
@@ -150,6 +176,16 @@ class LoginActivity : AppCompatActivity() {
      */
     private fun checkAndHandleLogin(pageUrl: String?): Boolean {
         if (!loginReady) return false
+        // The API page is useful for the session, but usually does not render
+        // the learner's display name. After saving cookies, revisit the main
+        // profile page once and collect the name before entering the app.
+        pendingNameSyncUid?.let { uid ->
+            if (pageUrl != null && isExpectedHost(pageUrl, "i.chaoxing.com")) {
+                pendingNameSyncUid = null
+                captureDisplayNameFromMainPage { goToMain(uid) }
+                return false
+            }
+        }
         val now = System.currentTimeMillis()
         when (capturePhase) {
             0 -> {
@@ -167,7 +203,18 @@ class LoginActivity : AppCompatActivity() {
                     if (!isExpectedHost(pageUrl, "i.chaoxing.com")) return restartLoginAfterRedirect()
                     capturePhase = 2
                     lastNavTime = now
-                    webView.loadUrl(SEED_URL_COURSE)
+                    // The profile name is shown on the main site, not necessarily in the
+                    // course API response. Capture it before navigating away.
+                    mainHandler.postDelayed({
+                        if (capturePhase == 2 && !isFinishing) {
+                            captureDisplayNameFromMainPage {
+                                if (capturePhase == 2 && !isFinishing) {
+                                    lastNavTime = System.currentTimeMillis()
+                                    webView.loadUrl(SEED_URL_COURSE)
+                                }
+                            }
+                        }
+                    }, 600L)
                 } else if (lastNavTime > 0 && now - lastNavTime > NAV_TIMEOUT_MS) {
                     // 页面一直没加载完（网络卡）→ 重试
                     lastNavTime = now
@@ -200,7 +247,12 @@ class LoginActivity : AppCompatActivity() {
                     val uid = accountManager.addAccountByDomain(cookiesByDomain)
                     if (uid != null) {
                         mainHandler.removeCallbacks(checkLoginRunnable)
-                        syncDisplayNameFromAuthenticatedPage(uid) { goToMain(uid) }
+                        capturedDisplayName?.let { AccountProfileStore(this).saveDisplayName(uid, it) }
+                        if (capturedDisplayName != null) goToMain(uid)
+                        else {
+                            pendingNameSyncUid = uid
+                            webView.loadUrl(SEED_URL_MAIN)
+                        }
                         return true
                     }
                     return restartLoginAfterRedirect()
@@ -223,6 +275,8 @@ class LoginActivity : AppCompatActivity() {
 
     private fun restartLoginAfterRedirect(): Boolean {
         capturePhase = 0
+        capturedDisplayName = null
+        pendingNameSyncUid = null
         loginReady = false
         mainHandler.removeCallbacks(checkLoginRunnable)
         if (::tvAccountHint.isInitialized) {
@@ -244,6 +298,56 @@ class LoginActivity : AppCompatActivity() {
         return collectCookiesByDomain().values.joinToString("; ")
     }
 
+    private fun captureDisplayNameFromMainPage(onComplete: () -> Unit) {
+        val uid = com.zhizhou.xxtassistant.util.CookieIdentity
+            .singleUid(collectCookiesByDomain().values)
+        if (uid == null || !::webView.isInitialized) {
+            onComplete()
+            return
+        }
+        val script = """(function() {
+            var selectors = ['[data-real-name]', '[data-user-name]', '#realName', '#userName',
+                '.userName', '.user-name', '.person_name', '.personName', '.personal-name',
+                '.userInfo .name', '.user-info .name', '.header-user-name'];
+            var names = [];
+            selectors.forEach(function(selector) {
+                document.querySelectorAll(selector).forEach(function(node) {
+                    var name = (node.getAttribute('data-real-name') || node.getAttribute('data-user-name') ||
+                        node.textContent || '').trim();
+                    if (name && names.indexOf(name) < 0) names.push(name);
+                });
+            });
+            return JSON.stringify({names: names, text: (document.body && document.body.innerText || '').slice(0, 12000),
+                html: (document.documentElement && document.documentElement.outerHTML || '').slice(0, 100000)});
+        })()"""
+        var attempts = 0
+        fun poll() {
+            if (isFinishing || isDestroyed || !::webView.isInitialized) {
+                onComplete()
+                return
+            }
+            attempts++
+            runCatching {
+                webView.evaluateJavascript(script) { encoded ->
+                    val snapshot = runCatching {
+                        val decoded = org.json.JSONTokener(encoded).nextValue() as? String
+                        org.json.JSONObject(decoded.orEmpty())
+                    }.getOrNull()
+                    val names = snapshot?.optJSONArray("names")
+                    val fromDom = (0 until (names?.length() ?: 0)).firstNotNullOfOrNull { index ->
+                        AccountNameParser.parseVisibleProfile("姓名：${names?.optString(index).orEmpty()}")
+                    }
+                    capturedDisplayName = fromDom
+                        ?: snapshot?.optString("html")?.let { AccountNameParser.parseAuthenticatedPage(it, uid) }
+                        ?: snapshot?.optString("text")?.let(AccountNameParser::parseVisibleProfile)
+                    if (capturedDisplayName != null || attempts >= 6) onComplete()
+                    else mainHandler.postDelayed(::poll, 500L)
+                }
+            }.onFailure { onComplete() }
+        }
+        poll()
+    }
+
     private fun syncDisplayNameFromAuthenticatedPage(uid: String, onComplete: () -> Unit) {
         if (!::webView.isInitialized) {
             onComplete()
@@ -255,7 +359,7 @@ class LoginActivity : AppCompatActivity() {
                     org.json.JSONTokener(encoded).nextValue() as? String
                 }.getOrNull()
                 if (!body.isNullOrBlank()) {
-                    AccountNameParser.parse(body, uid)
+                    AccountNameParser.parseAuthenticatedPage(body, uid)
                         ?.let { AccountProfileStore(this).saveDisplayName(uid, it) }
                 }
                 onComplete()
@@ -273,7 +377,7 @@ class LoginActivity : AppCompatActivity() {
 
     private fun goToMain(selectedUid: String? = null) {
         if (::progressBar.isInitialized) progressBar.visibility = View.GONE
-        startActivity(Intent(this, MainActivity::class.java).apply {
+        startActivity(Intent(this, TodayActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             selectedUid?.let { putExtra("selectedUid", it) }
         })

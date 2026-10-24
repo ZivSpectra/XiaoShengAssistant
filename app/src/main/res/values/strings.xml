@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="focus_accessibility_description">自律模式：仅识别所选应用的前台使用时间，达到每日上限后返回桌面并打开学习应用；不读取屏幕内容。</string>
     <string name="app_name">小笙助手</string>
 
     <!-- 主页 -->
@@ -31,11 +32,7 @@
     <string name="settings_layout_single">单列排列</string>
     <string name="settings_layout_double">双列排列</string>
     <string name="settings_saved">设置已保存</string>
-    <string name="permission_section_label">后台提醒与系统权限</string>
-    <string name="open_notification_permission">设置锁屏与悬浮通知</string>
     <string name="open_notification_display_settings">打开锁屏与悬浮通知设置</string>
-    <string name="open_exact_alarm_permission">允许精确闹钟</string>
-    <string name="open_battery_permission">允许后台运行（关闭电池优化）</string>
     <string name="reminder_onboarding_notification_title">先开启通知提醒</string>
     <string name="reminder_onboarding_notification_message">请先允许通知权限，并确认提醒频道允许在锁屏显示。悬浮/弹出通知和声音属于可选增强，不想打扰时可以保持关闭；“熄屏通知”还需要手机系统开启熄屏显示，小笙无法代替你修改这个系统开关。</string>
     <string name="reminder_onboarding_exact_title">再开启精确闹钟</string>
@@ -93,9 +90,7 @@
     <string name="expand_all">全部展开</string>
     <string name="collapse_all">全部收起</string>
     <string name="manage_manual_courses">管理手动课程</string>
-    <string name="study_group_code">学习交流群：243863924（点击复制）</string>
-    <string name="view_debug_log">查看联调日志（抓取排查）</string>
-    <string name="logout">退出登录</string>
+    <string name="homework_menu">作业菜单</string>
     <string name="course_actions">课程操作</string>
     <string name="pin">置顶</string>
     <string name="more_actions">更多操作</string>

@@ -10,6 +10,14 @@ import java.time.temporal.ChronoUnit
 class CourseTableSettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("xxt_course_table_settings", Context.MODE_PRIVATE)
 
+    fun courseLeadMinutes(accountId: String): Int =
+        prefs.getInt(key(accountId, "course_lead_minutes"), 30).takeIf { it in 0..180 } ?: 30
+
+    fun saveCourseLeadMinutes(accountId: String, minutes: Int) {
+        if (minutes !in 0..180) return
+        prefs.edit().putInt(key(accountId, "course_lead_minutes"), minutes).apply()
+    }
+
     fun preparationHour(accountId: String): Int = prefs.getInt(key(accountId, "prep_hour"), 20)
 
     fun preparationMinute(accountId: String): Int = prefs.getInt(key(accountId, "prep_minute"), 0)

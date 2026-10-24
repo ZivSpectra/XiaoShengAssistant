@@ -8,9 +8,9 @@ import org.junit.Test
 
 class TabNavigationTest {
     @Test
-    fun rootTabTransitionsReuseStackAndAvoidSamePageLaunch() {
+    fun rootTabTransitionsReturnToTodayWithoutGrowingStack() {
         assertEquals(
-            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
             TAB_NAVIGATION_FLAGS
         )
         assertFalse(shouldNavigateToTab(String::class.java, String::class.java))

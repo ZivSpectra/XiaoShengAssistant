@@ -11,4 +11,20 @@ internal object CourseReminderPolicy {
 
     fun alarmModeChanged(previous: Boolean?, current: Boolean): Boolean =
         previous == null || previous != current
+
+    fun triggerAt(startAt: Long, leadMinutes: Int): Long =
+        startAt - leadMinutes * 60_000L
+
+    fun upcomingTriggerAt(startAt: Long, now: Long, leadMinutes: Int): Long? {
+        if (startAt <= now) return null
+        return maxOf(triggerAt(startAt, leadMinutes), minOf(now + 1_000L, startAt))
+    }
+
+    fun showTriggerAt(
+        startAt: Long,
+        now: Long,
+        leadMinutes: Int,
+        acknowledged: Boolean,
+        activeNotification: Boolean
+    ): Long? = if (acknowledged || activeNotification) null else upcomingTriggerAt(startAt, now, leadMinutes)
 }

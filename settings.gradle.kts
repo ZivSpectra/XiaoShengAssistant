@@ -18,4 +18,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "XueXiTongAssistant"  // 项目名
-include(":app")                          // 只包含 app 这一个模块
+include(":app")

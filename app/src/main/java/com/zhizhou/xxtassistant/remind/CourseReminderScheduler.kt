@@ -75,6 +75,9 @@ object CourseReminderScheduler {
             val periods = CoursePeriodStore(context).list(accountId)
             val periodStore = CoursePeriodStore(context)
             val tableSettings = CourseTableSettingsStore(context)
+            val courseLeadMinutes = tableSettings.courseLeadMinutes(accountId)
+            val acknowledged = CourseNotification.acknowledgedOccurrences(context)
+            val activeNotificationIds = CourseNotification.activeNotificationIds(context)
             data class AlarmSpec(
                 val action: String,
                 val token: String,
@@ -98,8 +101,14 @@ object CourseReminderScheduler {
                 .forEach { schedule ->
                     val startAt = atPeriodStart(day, schedule.startPeriod, periods)
                     val endAt = atPeriodEnd(day, schedule.endPeriod, periods)
-                    val showAt = startAt - 30 * 60_000L
-                    if (showAt > now) {
+                    val showAt = CourseReminderPolicy.showTriggerAt(
+                        startAt = startAt,
+                        now = now,
+                        leadMinutes = courseLeadMinutes,
+                        acknowledged = courseOccurrenceKey(accountId, schedule.id, startAt) in acknowledged,
+                        activeNotification = courseNotificationId(accountId, schedule.id, startAt) in activeNotificationIds
+                    )
+                    if (showAt != null) {
                         val token = "show:${accountId}:${schedule.id}:$offset"
                         specs += AlarmSpec(ACTION_SHOW, token, showAt) { intent ->
                             intent.putExtra(EXTRA_ACCOUNT, accountId)

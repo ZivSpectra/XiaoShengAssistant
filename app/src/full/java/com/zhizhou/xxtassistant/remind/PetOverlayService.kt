@@ -50,6 +50,8 @@ class PetOverlayService : Service() {
     private var direction = 1f
     private var pausedUntil = 0L
     private var nextArtworkAt = SystemClock.uptimeMillis() + 10_000L
+    private var userDragUntil = 0L
+    private var nextBreathAt = SystemClock.uptimeMillis() + 2_000L
     private val random = Random.Default
     private val earlyClassToday by lazy(LazyThreadSafetyMode.NONE) { hasEarlyClassToday() }
 
@@ -70,6 +72,10 @@ class PetOverlayService : Service() {
             val usableHeight = (screenHeight - height - edge * 2 - bottomSafeArea).coerceAtLeast(1)
             val perimeter = 2f * (usableWidth + usableHeight)
             val now = SystemClock.uptimeMillis()
+            if (now < userDragUntil) {
+                handler.postDelayed(this, 90L)
+                return
+            }
             if (now < pausedUntil) {
                 handler.postDelayed(this, 100L)
                 return
@@ -80,7 +86,7 @@ class PetOverlayService : Service() {
             } else {
                 (perimeterPosition - waypoint + perimeter) % perimeter
             }
-            val speed = random.nextDouble(0.7, 1.7).toFloat()
+            val speed = random.nextDouble(1.2, 2.8).toFloat()
             if (remaining <= speed) {
                 perimeterPosition = waypoint
                 waypoint = Float.NaN
@@ -115,7 +121,14 @@ class PetOverlayService : Service() {
             runCatching { windowManager?.updateViewLayout(view, params) }
             if (now >= nextArtworkAt) {
                 view.setImageResource(randomArtwork())
-                nextArtworkAt = now + random.nextLong(7_000L, 16_000L)
+                nextArtworkAt = now + random.nextLong(11_000L, 24_000L)
+            }
+            if (now >= nextBreathAt) {
+                view.animate().scaleX(1.035f).scaleY(1.035f).setDuration(520L)
+                    .withEndAction {
+                        view.animate().scaleX(1f).scaleY(1f).setDuration(620L).start()
+                    }.start()
+                nextBreathAt = now + random.nextLong(4_000L, 7_000L)
             }
             handler.postDelayed(this, random.nextLong(70L, 120L))
         }
@@ -143,9 +156,9 @@ class PetOverlayService : Service() {
     }
 
     private fun randomArtwork(): Int = if (earlyClassToday) {
-        listOf(R.drawable.pet_good_morning, R.drawable.pet_got_it, R.drawable.pet_encourage, R.drawable.pet_comfort).random(random)
+        listOf(R.drawable.companion_morning, R.drawable.companion_encourage, R.drawable.companion_shy).random(random)
     } else {
-        listOf(R.drawable.pet_celebrate, R.drawable.pet_got_it, R.drawable.pet_encourage).random(random)
+        listOf(R.drawable.companion_idle, R.drawable.companion_shy, R.drawable.companion_pout).random(random)
     }
 
     override fun onCreate() {
@@ -173,8 +186,8 @@ class PetOverlayService : Service() {
         screenHeight = metrics.heightPixels
         petView = PetView(this).also { view ->
             val params = WindowManager.LayoutParams(
-                56.dp,
-                56.dp,
+                88.dp,
+                136.dp,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 } else {
@@ -187,7 +200,7 @@ class PetOverlayService : Service() {
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
                 x = 8.dp
-                y = (screenHeight - 56.dp - 8.dp - bottomSafeArea).coerceAtLeast(8.dp)
+                y = (screenHeight - 136.dp - 8.dp - bottomSafeArea).coerceAtLeast(8.dp)
             }
             view.layoutParams = params
             runCatching { windowManager?.addView(view, params) }
@@ -269,8 +282,10 @@ class PetOverlayService : Service() {
     private inner class PetView(context: Context) : android.widget.ImageView(context) {
         private val hasEarlyClass = earlyClassToday
         private var downAt = 0L
-        private var downX = 0f
-        private var downY = 0f
+        private var downRawX = 0f
+        private var downRawY = 0f
+        private var startX = 0
+        private var startY = 0
         private var longPressTriggered = false
         private var touchCancelled = false
         private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -286,13 +301,20 @@ class PetOverlayService : Service() {
             // Use the actual Xiaosheng artwork instead of drawing a placeholder
             // shape. The launcher foreground keeps the transparent outer area
             // so the overlay does not become an opaque square on screen.
-            setImageResource(if (hasEarlyClass) R.drawable.pet_comfort else R.drawable.pet_celebrate)
+            setImageResource(R.drawable.companion_idle)
             scaleType = ScaleType.CENTER_INSIDE
             adjustViewBounds = true
+            imageTintList = null
             contentDescription = "小笙桌宠"
             setOnClickListener {
-                val mood = if (hasEarlyClass) random.nextInt(2) else random.nextInt(2, 4)
-                setImageResource(if (hasEarlyClass) R.drawable.pet_good_morning else R.drawable.pet_celebrate)
+                val moods = if (hasEarlyClass) {
+                    listOf(R.drawable.companion_morning, R.drawable.companion_encourage, R.drawable.companion_shy)
+                } else {
+                    listOf(R.drawable.companion_encourage, R.drawable.companion_shy, R.drawable.companion_pout)
+                }
+                setImageResource(moods.random(random))
+                nextArtworkAt = SystemClock.uptimeMillis() + 20_000L
+                val mood = random.nextInt(4)
                 Toast.makeText(this@PetOverlayService, moodText(mood), Toast.LENGTH_SHORT).show()
             }
             setOnLongClickListener {
@@ -307,8 +329,11 @@ class PetOverlayService : Service() {
         override fun onTouchEvent(event: MotionEvent): Boolean = when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 downAt = SystemClock.uptimeMillis()
-                downX = event.x
-                downY = event.y
+                downRawX = event.rawX
+                downRawY = event.rawY
+                val params = layoutParams as? WindowManager.LayoutParams
+                startX = params?.x ?: 0
+                startY = params?.y ?: 0
                 longPressTriggered = false
                 touchCancelled = false
                 isPressed = true
@@ -316,12 +341,20 @@ class PetOverlayService : Service() {
                 true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (kotlin.math.abs(event.x - downX) > touchSlop ||
-                    kotlin.math.abs(event.y - downY) > touchSlop
+                val deltaX = event.rawX - downRawX
+                val deltaY = event.rawY - downRawY
+                if (kotlin.math.abs(deltaX) > touchSlop || kotlin.math.abs(deltaY) > touchSlop
                 ) {
                     handler.removeCallbacks(longPressTask)
                     touchCancelled = true
                     isPressed = false
+                    val params = layoutParams as? WindowManager.LayoutParams
+                    if (params != null) {
+                        params.x = (startX + deltaX.toInt()).coerceIn(0, (screenWidth - width).coerceAtLeast(0))
+                        params.y = (startY + deltaY.toInt()).coerceIn(0, (screenHeight - height - bottomSafeArea).coerceAtLeast(0))
+                        runCatching { windowManager?.updateViewLayout(this, params) }
+                        userDragUntil = SystemClock.uptimeMillis() + 3_500L
+                    }
                 }
                 true
             }

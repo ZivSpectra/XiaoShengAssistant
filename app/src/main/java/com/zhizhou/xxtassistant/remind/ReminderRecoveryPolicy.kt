@@ -7,6 +7,7 @@ package com.zhizhou.xxtassistant.remind
  */
 internal object ReminderRecoveryPolicy {
     const val HOMEWORK_REBUILD_WORK_NAME = "rebuild_homework_reminders_after_change"
+    const val COURSE_REBUILD_WORK_NAME = "rebuild_course_reminders_after_change"
 
     data class Request(
         val uniqueWorkName: String,
@@ -16,6 +17,11 @@ internal object ReminderRecoveryPolicy {
     fun homeworkChange(requestedAccountId: String, activeAccountId: String?): Request? {
         if (requestedAccountId.isBlank() || requestedAccountId != activeAccountId) return null
         return Request(HOMEWORK_REBUILD_WORK_NAME, requestedAccountId)
+    }
+
+    fun courseChange(requestedAccountId: String, activeAccountId: String?): Request? {
+        if (requestedAccountId.isBlank() || requestedAccountId != activeAccountId) return null
+        return Request(COURSE_REBUILD_WORK_NAME, requestedAccountId)
     }
 
     fun shouldRestore(expectedAccountId: String?, activeAccountId: String?): Boolean =

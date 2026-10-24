@@ -12,7 +12,7 @@ import androidx.compose.ui.res.painterResource
 
 /** Flags used by every root-tab transition; kept explicit for regression tests. */
 internal const val TAB_NAVIGATION_FLAGS: Int =
-    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP
+    Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
 
 internal fun shouldNavigateToTab(current: Class<*>, target: Class<*>): Boolean =
     current != target
@@ -20,10 +20,8 @@ internal fun shouldNavigateToTab(current: Class<*>, target: Class<*>): Boolean =
 /**
  * Switches between the four root pages without growing an Activity stack.
  *
- * Every root page is a singleTop destination. REORDER_TO_FRONT keeps an
- * already-created page alive and moves it to the front; SINGLE_TOP prevents a
- * second instance when the destination is already visible. Removing the
- * default transition also keeps rapid bottom-bar taps visually continuous.
+ * Clear pages above an existing destination so tab switching never builds an
+ * unbounded back stack. TodayActivity is the task's root page.
  */
 @Suppress("DEPRECATION")
 fun Context.navigateToTab(target: Class<out Activity>) {
@@ -31,6 +29,19 @@ fun Context.navigateToTab(target: Class<out Activity>) {
     if (!shouldNavigateToTab(activity.javaClass, target)) return
     activity.startActivity(
         Intent(activity, target).addFlags(TAB_NAVIGATION_FLAGS)
+    )
+    activity.overridePendingTransition(0, 0)
+}
+
+@Suppress("DEPRECATION")
+internal fun returnToTodayOrExit(activity: Activity) {
+    if (activity is TodayActivity) {
+        activity.finishAffinity()
+        return
+    }
+    activity.startActivity(
+        Intent(activity, TodayActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
     )
     activity.overridePendingTransition(0, 0)
 }

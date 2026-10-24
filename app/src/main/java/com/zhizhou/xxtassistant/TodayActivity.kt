@@ -2,9 +2,8 @@ package com.zhizhou.xxtassistant
 
 import android.content.Intent
 import android.os.Bundle
-import android.app.DatePickerDialog
-import android.app.TimePickerDialog
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,6 +50,8 @@ import com.zhizhou.xxtassistant.data.TodayTodoStore
 import com.zhizhou.xxtassistant.data.ViewSettings
 import com.zhizhou.xxtassistant.remind.TodayTodoReminderWorker
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.material3.AlertDialog
@@ -59,6 +60,8 @@ import androidx.compose.material3.TextButton
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 
 /** 今日聚合页：只读本地课表和作业，不触发网络请求。 */
 class TodayActivity : ComponentActivity() {
@@ -78,19 +81,26 @@ class TodayActivity : ComponentActivity() {
 @Composable
 private fun TodayScreen(accountId: String) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val today = remember { System.currentTimeMillis() }
-    val dayLabel = remember(today) {
-        SimpleDateFormat("M月d日 E", Locale.CHINA).format(today)
+    BackHandler { returnToTodayOrExit(context as ComponentActivity) }
+    var refresh by remember { mutableIntStateOf(0) }
+    var today by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val lifecycle = (context as? androidx.activity.ComponentActivity)?.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                today = System.currentTimeMillis()
+                refresh++
+            }
+        }
+        lifecycle?.addObserver(observer)
+        onDispose { lifecycle?.removeObserver(observer) }
     }
-    val weekday = remember(today) {
-        Calendar.getInstance().apply { timeInMillis = today }
-            .get(Calendar.DAY_OF_WEEK).let { if (it == Calendar.SUNDAY) 7 else it - 1 }
-    }
-    val term = remember { AcademicYear.currentTerm(today) }
-    val week = remember {
-        CourseTableSettingsStore(context).teachingWeek(accountId, term, today) ?: 1
-    }
-    val courses = remember(accountId, term, weekday, week) {
+    val dayLabel = SimpleDateFormat("M月d日 E", Locale.CHINA).format(today)
+    val weekday = Calendar.getInstance().apply { timeInMillis = today }
+        .get(Calendar.DAY_OF_WEEK).let { if (it == Calendar.SUNDAY) 7 else it - 1 }
+    val term = AcademicYear.currentTerm(today)
+    val week = CourseTableSettingsStore(context).teachingWeek(accountId, term, today) ?: 1
+    val courses = remember(accountId, term, weekday, week, refresh) {
         CourseScheduleStore(context).list(accountId, term)
             .filter { it.weekday == weekday && it.occursInWeek(week) }
             .sortedBy { it.startPeriod }
@@ -106,11 +116,11 @@ private fun TodayScreen(accountId: String) {
         )
             .take(8)
     }
-    val dayKey = remember(today) { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(today) }
+    val dayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(today)
     val todoStore = remember { TodayTodoStore(context) }
-    var todos by remember(accountId, dayKey) { mutableStateOf(todoStore.list(accountId, dayKey)) }
+    var todos by remember(accountId, dayKey, refresh) { mutableStateOf(todoStore.list(accountId, dayKey)) }
     var addTodoOpen by remember { mutableStateOf(false) }
-    var plannedDate by remember { mutableStateOf(startOfToday()) }
+    var plannedDate by remember(today) { mutableLongStateOf(startOfDay(today)) }
     var reminderTime by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
     Scaffold(
@@ -189,34 +199,16 @@ private fun TodayScreen(accountId: String) {
                     OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("要做什么") }, singleLine = true)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = {
-                            val current = Calendar.getInstance().apply { timeInMillis = plannedDate }
-                            DatePickerDialog(
-                                context,
-                                { _, year, month, day ->
-                                    plannedDate = Calendar.getInstance().apply {
-                                        set(year, month, day, 0, 0, 0)
-                                        set(Calendar.MILLISECOND, 0)
-                                    }.timeInMillis
-                                },
-                                current.get(Calendar.YEAR),
-                                current.get(Calendar.MONTH),
-                                current.get(Calendar.DAY_OF_MONTH)
-                            ).apply {
-                                datePicker.calendarViewShown = false
-                                datePicker.spinnersShown = true
-                            }.show()
+                            WheelPickerDialogs.date(context, plannedDate) { plannedDate = it }
                         }) { Text("日期 ${SimpleDateFormat("M月d日", Locale.CHINA).format(plannedDate)}") }
                         TextButton(onClick = {
                             val now = Calendar.getInstance()
                             val initial = reminderTime ?: (now.get(Calendar.HOUR_OF_DAY) to now.get(Calendar.MINUTE))
-                            TimePickerDialog(
-                                context,
-                                { _, hour, minute -> reminderTime = hour to minute },
-                                initial.first,
-                                initial.second,
-                                true
-                            ).show()
-                        }) { Text(reminderTime?.let { "提醒 ${"%02d:%02d".format(it.first, it.second)}" } ?: "设置时间") }
+                            WheelPickerDialogs.time(context, initial.first, initial.second) { hour, minute -> reminderTime = hour to minute }
+                        }) { Text(reminderTime?.let { "提醒 ${"%02d:%02d".format(it.first, it.second)}" } ?: "设置提醒时间") }
+                        if (reminderTime != null) {
+                            TextButton(onClick = { reminderTime = null }) { Text("不提醒") }
+                        }
                     }
                     Text("待办会在所选日期当天显示；设置时间后会在该时刻提醒。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -289,7 +281,8 @@ private fun TodayTodoCard(todo: TodayTodo, onToggle: () -> Unit, onDelete: () ->
     }
 }
 
-private fun startOfToday(): Long = Calendar.getInstance().apply {
+private fun startOfDay(value: Long): Long = Calendar.getInstance().apply {
+    timeInMillis = value
     set(Calendar.HOUR_OF_DAY, 0)
     set(Calendar.MINUTE, 0)
     set(Calendar.SECOND, 0)

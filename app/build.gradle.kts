@@ -6,14 +6,26 @@ plugins {
 
 android {
     namespace = "com.zhizhou.xxtassistant"  // 包名（唯一标识）
+
     compileSdk = 34                        // 用什么版本的安卓 SDK 来编译
 
     defaultConfig {
         applicationId = "com.zhizhou.xxtassistant"  // 安装到手机后的应用ID
         minSdk = 26                                 // 最低支持安卓 8.0
         targetSdk = 34                               // 针对安卓 14 优化
-        versionCode = 8
-        versionName = "0.2.6"  // 课程表、今日待办与提醒改进体验版
+        versionCode = 9
+        versionName = "0.2.7"
+    }
+
+    flavorDimensions += "edition"
+    productFlavors {
+        create("basic") {
+            dimension = "edition"
+            versionName = "0.2.7-basic"
+        }
+        create("full") {
+            dimension = "edition"
+        }
     }
 
     buildTypes {

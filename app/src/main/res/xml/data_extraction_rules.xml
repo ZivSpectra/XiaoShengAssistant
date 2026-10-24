@@ -20,6 +20,7 @@
         <exclude domain="sharedpref" path="xxt_courses.xml" />
         <exclude domain="sharedpref" path="xxt_pinned.xml" />
         <exclude domain="sharedpref" path="xxt_pet_settings.xml" />
+        <exclude domain="sharedpref" path="xxt_focus_settings.xml" />
         <exclude domain="sharedpref" path="xxt_work_cfg.xml" />
         <exclude domain="sharedpref" path="xxt_view.xml" />
         <exclude domain="sharedpref" path="xxt_reminder_onboarding.xml" />
@@ -47,6 +48,7 @@
         <exclude domain="sharedpref" path="xxt_courses.xml" />
         <exclude domain="sharedpref" path="xxt_pinned.xml" />
         <exclude domain="sharedpref" path="xxt_pet_settings.xml" />
+        <exclude domain="sharedpref" path="xxt_focus_settings.xml" />
         <exclude domain="sharedpref" path="xxt_work_cfg.xml" />
         <exclude domain="sharedpref" path="xxt_view.xml" />
         <exclude domain="sharedpref" path="xxt_reminder_onboarding.xml" />

@@ -97,9 +97,35 @@ object ReminderDispatch {
         context: Context,
         accountId: String,
         schedules: () -> List<CourseSchedule>,
+        durable: Boolean = true,
         onComplete: ((Result<CourseReminderScheduler.ScheduleResult>) -> Unit)? = null
     ) {
         val appContext = context.applicationContext
+        if (durable) {
+            val recoveryRequest = ReminderRecoveryPolicy.courseChange(
+                requestedAccountId = accountId,
+                activeAccountId = AccountManager(appContext).getActiveUid()
+            )
+            if (recoveryRequest != null) {
+                val request = OneTimeWorkRequestBuilder<CourseReminderRestoreWorker>()
+                    .setInitialDelay(1, TimeUnit.SECONDS)
+                    .setInputData(
+                        Data.Builder()
+                            .putString(ReminderRestoreWorker.KEY_EXPECTED_ACCOUNT_ID, recoveryRequest.expectedAccountId)
+                            .build()
+                    )
+                    .build()
+                runCatching {
+                    WorkManager.getInstance(appContext).enqueueUniqueWork(
+                        recoveryRequest.uniqueWorkName,
+                        ExistingWorkPolicy.REPLACE,
+                        request
+                    )
+                }.onFailure {
+                    DebugLog.log(appContext, "课程提醒后台重建登记失败：${it.javaClass.simpleName}")
+                }
+            }
+        }
         queue.submit(
             key = "courses",
             isAccountActive = { AccountManager(appContext).getActiveUid() == accountId },
@@ -121,6 +147,8 @@ object ReminderDispatch {
             // Never cancel a new account's freshly persisted rebuild request.
             WorkManager.getInstance(appContext)
                 .cancelUniqueWork(ReminderRecoveryPolicy.HOMEWORK_REBUILD_WORK_NAME)
+            WorkManager.getInstance(appContext)
+                .cancelUniqueWork(ReminderRecoveryPolicy.COURSE_REBUILD_WORK_NAME)
             ReminderScheduler.cancelAll(appContext)
             CourseReminderScheduler.cancelAll(appContext, clearNotifications = false)
             if (!accountId.isNullOrBlank()) CourseNotification.clearForAccount(appContext, accountId)

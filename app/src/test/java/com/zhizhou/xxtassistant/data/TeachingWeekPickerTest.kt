@@ -1,6 +1,8 @@
 package com.zhizhou.xxtassistant.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TeachingWeekPickerTest {
@@ -27,5 +29,13 @@ class TeachingWeekPickerTest {
         assertEquals(5, TeachingWeekPicker.afterHorizontalSwipe(5, 20f))
         assertEquals(25, TeachingWeekPicker.afterHorizontalSwipe(25, -100f))
         assertEquals(1, TeachingWeekPicker.afterHorizontalSwipe(1, 100f))
+    }
+
+    @Test
+    fun todayMarkerOnlyAppearsInCurrentWeekAndOnCurrentDay() {
+        assertTrue(TeachingWeekPicker.isTodayColumn(5, 5, 5, 5))
+        assertFalse(TeachingWeekPicker.isTodayColumn(6, 5, 5, 5))
+        assertFalse(TeachingWeekPicker.isTodayColumn(7, 5, 5, 5))
+        assertFalse(TeachingWeekPicker.isTodayColumn(5, 5, 4, 5))
     }
 }

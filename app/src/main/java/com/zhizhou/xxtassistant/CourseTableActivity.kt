@@ -9,8 +9,10 @@ import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -160,6 +162,7 @@ private fun CourseTableScreen(
     onSchedulesChanged: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    BackHandler { returnToTodayOrExit(context as ComponentActivity) }
     val snackbar = remember { SnackbarHostState() }
     val periodStore = remember { CoursePeriodStore(context) }
     val tableSettings = remember { CourseTableSettingsStore(context) }
@@ -172,6 +175,7 @@ private fun CourseTableScreen(
     var selectedWeek by rememberSaveable {
         mutableIntStateOf(TeachingWeekPicker.clamp(currentTeachingWeek(accountId, defaultTerm, tableSettings)))
     }
+    val currentWeek = TeachingWeekPicker.clamp(currentTeachingWeek(accountId, selectedTerm, tableSettings))
     var courseMenuOpen by remember { mutableStateOf(false) }
     var weekPickerOpen by remember { mutableStateOf(false) }
     var showManualDialog by remember { mutableStateOf(false) }
@@ -278,7 +282,7 @@ private fun CourseTableScreen(
                 title = {
                     Column {
                         Text("课程表", style = MaterialTheme.typography.titleLarge)
-                        Text(selectedTerm, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(displayTermName(selectedTerm), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 navigationIcon = {
@@ -313,7 +317,7 @@ private fun CourseTableScreen(
                                 onClick = {
                                     courseMenuOpen = false
                                     val content = buildString {
-                                        append("小笙助手课程表 · ").append(selectedTerm).append('\n')
+                                        append("小笙助手课程表 · ").append(displayTermName(selectedTerm)).append('\n')
                                         schedules.filter { it.occursInWeek(selectedWeek) }
                                             .sortedWith(compareBy<CourseSchedule> { it.weekday }.thenBy { it.startPeriod })
                                             .forEach { course ->
@@ -335,7 +339,7 @@ private fun CourseTableScreen(
                                 androidx.compose.material3.HorizontalDivider()
                                 terms.forEach { term ->
                                     androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text(if (term == selectedTerm) "✓ $term" else term) },
+                                    text = { Text(if (term == selectedTerm) "✓ ${displayTermName(term)}" else displayTermName(term)) },
                                         onClick = { selectedTerm = term; courseMenuOpen = false }
                                     )
                                 }
@@ -383,7 +387,7 @@ private fun CourseTableScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box {
                     TextButton(onClick = { weekPickerOpen = true }) {
-                        Text("第 ${selectedWeek} 周  ▾", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(if (selectedWeek == currentWeek) "本周  ▾" else "第 ${selectedWeek} 周  ▾", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     }
                 }
                 Spacer(Modifier.weight(1f))
@@ -406,8 +410,8 @@ private fun CourseTableScreen(
                 targetState = viewMode,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 transitionSpec = {
-                    (slideInHorizontally { it / 5 } + fadeIn()) togetherWith
-                        (slideOutHorizontally { -it / 5 } + fadeOut())
+                    (slideInHorizontally { width -> if (targetState > initialState) width else -width } + fadeIn()) togetherWith
+                        (slideOutHorizontally { width -> if (targetState > initialState) -width else width } + fadeOut())
                 },
                 label = "course-table-view"
             ) { mode ->
@@ -416,7 +420,7 @@ private fun CourseTableScreen(
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         if (mode == 0) "${dayNames.getOrNull(selectedDay - 1) ?: "今天"} · ${visible.size} 节课"
-                        else "本周共 ${visible.size} 节课",
+                        else "第 $selectedWeek 周 · 共 ${visible.size} 节课",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 4.dp)
@@ -429,13 +433,25 @@ private fun CourseTableScreen(
                             Text("这段时间还没有课程", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     } else if (mode == 1) {
-                        CourseWeekGrid(
-                            schedules = visible,
-                            periods = periodStore.list(accountId),
-                            onEdit = { viewingCourse = it },
-                            onDelete = { viewingCourse = it },
-                            modifier = Modifier.weight(1f).fillMaxWidth()
-                        )
+                        AnimatedContent(
+                            targetState = selectedWeek,
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            transitionSpec = {
+                                (slideInHorizontally { width -> if (targetState > initialState) width else -width } + fadeIn()) togetherWith
+                                    (slideOutHorizontally { width -> if (targetState > initialState) -width else width } + fadeOut())
+                            },
+                            label = "course-week-swipe"
+                        ) { week ->
+                            CourseWeekGrid(
+                                schedules = schedules.filter { it.occursInWeek(week) },
+                                periods = periodStore.list(accountId),
+                                displayedWeek = week,
+                                currentWeek = currentWeek,
+                                onEdit = { viewingCourse = it },
+                                onDelete = { viewingCourse = it },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     } else {
                         LazyColumn(
                             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -468,14 +484,20 @@ private fun CourseTableScreen(
                         ) {
                             rowWeeks.forEach { week ->
                                 val selected = week == selectedWeek
+                                val isCurrent = week == currentWeek
+                                val hasCourses = schedules.any { it.occursInWeek(week) }
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
                                         .aspectRatio(1f)
                                         .clip(RoundedCornerShape(6.dp))
                                         .background(
-                                            if (selected) MaterialTheme.colorScheme.primaryContainer
-                                            else MaterialTheme.colorScheme.surfaceVariant
+                                            when {
+                                                selected -> MaterialTheme.colorScheme.primaryContainer
+                                                isCurrent -> MaterialTheme.colorScheme.secondaryContainer
+                                                hasCourses -> MaterialTheme.colorScheme.tertiaryContainer
+                                                else -> MaterialTheme.colorScheme.surfaceVariant
+                                            }
                                         )
                                         .border(
                                             width = if (selected) 1.5.dp else 0.dp,
@@ -489,7 +511,7 @@ private fun CourseTableScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = week.toString(),
+                                        text = if (isCurrent) "本周" else week.toString(),
                                         color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                                     )
@@ -634,6 +656,8 @@ private fun CourseTableScreen(
 private fun CourseWeekGrid(
     schedules: List<CourseSchedule>,
     periods: List<CoursePeriod>,
+    displayedWeek: Int,
+    currentWeek: Int,
     onEdit: (CourseSchedule) -> Unit,
     onDelete: (CourseSchedule) -> Unit,
     modifier: Modifier = Modifier
@@ -662,7 +686,9 @@ private fun CourseWeekGrid(
                 }
                 Row(Modifier.weight(1f)) {
                     dayNames.forEachIndexed { index, dayName ->
-                        val isToday = index + 1 == todayWeekday()
+                        val isToday = TeachingWeekPicker.isTodayColumn(
+                            displayedWeek, currentWeek, index + 1, todayWeekday()
+                        )
                         Surface(
                             Modifier.width(dayWidth).height(42.dp),
                             color = if (isToday) MaterialTheme.colorScheme.secondaryContainer
@@ -696,12 +722,8 @@ private fun CourseWeekGrid(
                                 verticalArrangement = Arrangement.Center
                             ) {
                                 Text("${index + 1}", style = MaterialTheme.typography.labelLarge)
-                                Text(
-                                    period?.let { "${formatMinutes(it.startMinute)}-${formatMinutes(it.endMinute)}" } ?: "—",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1
-                                )
+                                Text(period?.let { formatMinutes(it.startMinute) } ?: "—", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                                Text(period?.let { formatMinutes(it.endMinute) } ?: "—", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                             }
                         }
                     }
@@ -892,14 +914,13 @@ private fun PeriodSettingsDialog(
     }
     var prepHour by remember(accountId) { mutableStateOf(tableSettings.preparationHour(accountId).toString()) }
     var prepMinute by remember(accountId) { mutableStateOf(tableSettings.preparationMinute(accountId).toString().padStart(2, '0')) }
-    var termStartDate by remember(accountId, term) {
-        mutableStateOf(formatDate(tableSettings.termStartDate(accountId, term)))
-    }
+    var courseLeadMinutes by remember(accountId) { mutableStateOf(tableSettings.courseLeadMinutes(accountId).toString()) }
+    var termStartDate by remember(accountId, term) { mutableStateOf(tableSettings.termStartDate(accountId, term)) }
     var error by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("作息与前一天提醒") },
+        title = { Text("作息与课程提醒") },
         text = {
             Column(
                 modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
@@ -913,36 +934,26 @@ private fun PeriodSettingsDialog(
                         color = MaterialTheme.colorScheme.error
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedTextField(
-                        value = termStartDate,
-                        onValueChange = { next ->
-                            if (next.length <= 10) {
-                                termStartDate = next
-                                error = ""
-                            }
-                        },
-                        label = { Text("第 1 周开始日期") },
-                        supportingText = {
-                            Text(if (Regex("20\\d{2}").containsMatchIn(term)) "该学期必填；支持手动输入" else "可留空；支持手动输入")
-                        },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = {
-                        val selected = parseDate(termStartDate) ?: System.currentTimeMillis()
-                        val calendar = Calendar.getInstance(Locale.CHINA).apply { timeInMillis = selected }
-                        android.app.DatePickerDialog(
-                            context,
-                            { _, year, month, day -> termStartDate = "%04d-%02d-%02d".format(Locale.ROOT, year, month + 1, day) },
-                            calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)
-                        ).apply {
-                            datePicker.calendarViewShown = false
-                            datePicker.spinnersShown = true
-                        }.show()
-                    }) { Text("滚轮") }
+                Text("第 1 周开始日期", style = MaterialTheme.typography.labelLarge)
+                TextButton(onClick = {
+                    WheelPickerDialogs.date(context, termStartDate ?: System.currentTimeMillis()) {
+                        termStartDate = it
+                        error = ""
+                    }
+                }) {
+                    Text(termStartDate?.let(::formatDate).orEmpty().ifBlank { "选择日期" })
                 }
+                if (!Regex("20\\d{2}").containsMatchIn(term)) {
+                    TextButton(onClick = { termStartDate = null }) { Text("清除开学日期") }
+                }
+                OutlinedTextField(
+                    value = courseLeadMinutes,
+                    onValueChange = { if (it.length <= 3 && it.all(Char::isDigit)) courseLeadMinutes = it },
+                    label = { Text("课前提前提醒（分钟）") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = prepHour,
@@ -991,23 +1002,23 @@ private fun PeriodSettingsDialog(
             Button(onClick = {
                 val hour = prepHour.toIntOrNull()
                 val minute = prepMinute.toIntOrNull()
+                val leadMinutes = courseLeadMinutes.toIntOrNull()
                 val periods = timeValues.mapNotNull { (period, time) ->
                     val start = parseClock(time.first)
                     val end = parseClock(time.second)
                     if (start == null || end == null) null else CoursePeriod(period, start, end)
                 }
-                val parsedTermStart = parseDate(termStartDate)
                 when {
-                    termStartDate.isNotBlank() && parsedTermStart == null ->
-                        error = "第 1 周开始日期格式不正确，请填写例如 2026-09-07"
-                    Regex("20\\d{2}").containsMatchIn(term) && parsedTermStart == null ->
+                    Regex("20\\d{2}").containsMatchIn(term) && termStartDate == null ->
                         error = "请填写该学期真实的第 1 周开始日期，避免课程提醒按错误周次触发"
                     hour == null || minute == null || hour !in 0..23 || minute !in 0..59 -> error = "提醒时间应为 00:00 至 23:59"
+                    leadMinutes == null || leadMinutes !in 0..180 -> error = "课前提醒时间应在 0 至 180 分钟之间"
                     periods.size != timeValues.size || periods.any { !it.isValid() } -> error = "请输入完整的时间，例如 08:00；结束时间必须晚于开始时间"
                     else -> {
                         periodStore.save(accountId, periods)
                         tableSettings.savePreparationTime(accountId, hour, minute)
-                        tableSettings.saveTermStartDate(accountId, term, parsedTermStart)
+                        tableSettings.saveCourseLeadMinutes(accountId, leadMinutes)
+                        tableSettings.saveTermStartDate(accountId, term, termStartDate)
                         onSaved()
                     }
                 }
@@ -1040,18 +1051,10 @@ private fun formatDate(day: Long?): String {
     return "${calendar.get(Calendar.YEAR)}-${(calendar.get(Calendar.MONTH) + 1).toString().padStart(2, '0')}-${calendar.get(Calendar.DAY_OF_MONTH).toString().padStart(2, '0')}"
 }
 
-private fun parseDate(value: String): Long? {
-    val match = Regex("^(\\d{4})-(\\d{1,2})-(\\d{1,2})$").matchEntire(value.trim()) ?: return null
-    val year = match.groupValues[1].toIntOrNull() ?: return null
-    val month = match.groupValues[2].toIntOrNull() ?: return null
-    val day = match.groupValues[3].toIntOrNull() ?: return null
-    return runCatching {
-        Calendar.getInstance(Locale.CHINA).apply {
-            clear()
-            isLenient = false
-            set(year, month - 1, day, 0, 0, 0)
-        }.timeInMillis
-    }.getOrNull()
+private fun displayTermName(term: String): String = when {
+    term.matches(Regex("\\d{4}-\\d{4}-1")) -> term.removeSuffix("-1") + "第一学期"
+    term.matches(Regex("\\d{4}-\\d{4}-2")) -> term.removeSuffix("-2") + "第二学期"
+    else -> term
 }
 
 private fun reloadSchedules(

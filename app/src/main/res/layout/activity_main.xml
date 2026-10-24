@@ -6,16 +6,32 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <TextView
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginStart="20dp"
-        android:layout_marginTop="18dp"
-        android:layout_marginEnd="20dp"
-        android:text="@string/homework_page_title"
-        android:textColor="@color/text_primary"
-        android:textSize="28sp"
-        android:textStyle="normal" />
+        android:layout_marginTop="10dp"
+        android:layout_marginEnd="12dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/homework_page_title"
+            android:textColor="@color/text_primary"
+            android:textSize="28sp" />
+
+        <ImageButton
+            android:id="@+id/btn_homework_menu"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/homework_menu"
+            android:padding="12dp"
+            android:src="@drawable/ic_more" />
+    </LinearLayout>
 
     <Button
         android:id="@+id/btn_date_filter"

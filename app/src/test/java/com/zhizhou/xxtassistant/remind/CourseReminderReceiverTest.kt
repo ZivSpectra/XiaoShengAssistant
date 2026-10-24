@@ -1,6 +1,7 @@
 package com.zhizhou.xxtassistant.remind
 
 import com.zhizhou.xxtassistant.data.CourseSchedule
+import com.zhizhou.xxtassistant.data.CoursePeriod
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertFalse
@@ -14,6 +15,10 @@ class CourseReminderReceiverTest {
         assertEquals(first, courseNotificationId("account-1", "course-1", 1_000L))
         assertNotEquals(first, courseNotificationId("account-2", "course-1", 1_000L))
         assertNotEquals(first, courseNotificationId("account-1", "course-1", 2_000L))
+        assertNotEquals(
+            courseOccurrenceKey("account-1", "course-1", 1_000L),
+            courseOccurrenceKey("account-1", "course-1", 2_000L)
+        )
     }
 
     @Test
@@ -25,7 +30,7 @@ class CourseReminderReceiverTest {
     }
 
     @Test
-    fun preparationSummary_containsOnlyPeriodAndCourseName() {
+    fun preparationSummary_containsActualTimesAndCourseName() {
         val courses = listOf(
             CourseSchedule(
                 id = "late",
@@ -50,9 +55,14 @@ class CourseReminderReceiverTest {
             )
         )
 
-        val summary = preparationSummary(courses)
+        val summary = preparationSummary(courses, listOf(
+            CoursePeriod(1, 8 * 60, 8 * 60 + 45),
+            CoursePeriod(2, 8 * 60 + 55, 9 * 60 + 40),
+            CoursePeriod(3, 10 * 60, 10 * 60 + 45),
+            CoursePeriod(4, 10 * 60 + 55, 11 * 60 + 40)
+        ))
 
-        assertEquals("第 1-2 节  模拟电子技术\n第 3-4 节  线性代数", summary)
+        assertEquals("08:00-09:40  模拟电子技术\n10:00-11:40  线性代数", summary)
         assertFalse(summary.contains("A-101"))
         assertFalse(summary.contains("张老师"))
     }
